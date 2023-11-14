@@ -6,6 +6,7 @@
 #![no_main]
 
 use core::{cell::RefCell, fmt::Write};
+use heapless::String;
 
 use critical_section::Mutex;
 use esp32c6_hal::{
@@ -16,8 +17,7 @@ use esp32c6_hal::{
     riscv,
     timer::TimerGroup,
     uart::config::AtCmdConfig,
-    Cpu,
-    Uart,
+    Cpu, Uart,
 };
 use esp_backtrace as _;
 use nb::block;
@@ -34,7 +34,7 @@ fn main() -> ! {
     let mut timer0 = timer_group0.timer0;
 
     let mut uart0 = Uart::new(peripherals.UART0, &clocks);
-    uart0.set_at_cmd(AtCmdConfig::new(None, None, None, b'#', None));
+    uart0.set_at_cmd(AtCmdConfig::new(None, None, None, b'\n', None));
     uart0.set_rx_fifo_full_threshold(30).unwrap();
     uart0.listen_at_cmd();
     uart0.listen_rx_fifo_full();
@@ -57,18 +57,18 @@ fn main() -> ! {
     unsafe {
         riscv::interrupt::enable();
     }
+    critical_section::with(|cs| {
+        write!(SERIAL.borrow_ref_mut(cs).as_mut().unwrap(), "ESP32C6 > ").ok();
+    });
 
     loop {
-        critical_section::with(|cs| {
-            writeln!(SERIAL.borrow_ref_mut(cs).as_mut().unwrap(), "Hello World! Send a single `#` character or send at least 30 characters and see the interrupts trigger.").ok();
-        });
-
         block!(timer0.wait()).unwrap();
     }
 }
 
 #[interrupt]
 fn UART0() {
+    let mut cmd: String<255> = String::from("");
     critical_section::with(|cs| {
         let mut serial = SERIAL.borrow_ref_mut(cs);
         let serial = serial.as_mut().unwrap();
@@ -76,18 +76,42 @@ fn UART0() {
         let mut cnt = 0;
         while let nb::Result::Ok(_c) = serial.read() {
             cnt += 1;
+            if _c == 0x8 {
+                cmd.pop();
+            } else if _c != b'\n' {
+                cmd.push(_c as char);
+            }
         }
-        writeln!(serial, "Read {} bytes", cnt,).ok();
 
-        writeln!(
-            serial,
-            "Interrupt AT-CMD: {} RX-FIFO-FULL: {}",
-            serial.at_cmd_interrupt_set(),
-            serial.rx_fifo_full_interrupt_set(),
-        )
-        .ok();
+        match cmd.as_str() {
+            "help" => {
+                writeln!(serial, "\nCommands:\n    command1\n    command2\n    command3\n    command4\n    command5\n").ok();
+            }
+            "command1" => {
+                writeln!(serial, "run command1\n").ok();
+            }
+            "command2" => {
+                writeln!(serial, "run command2\n").ok();
+            }
+            "command3" => {
+                writeln!(serial, "run command3\n").ok();
+            }
+            "command4" => {
+                writeln!(serial, "run command4\n").ok();
+            }
+            "command5" => {
+                writeln!(serial, "run command5\n").ok();
+            }
+            _ => {
+                if !cmd.is_empty() {
+                    writeln!(serial, "Unknown command\n").ok();
+                }
+            }
+        }
 
         serial.reset_at_cmd_interrupt();
         serial.reset_rx_fifo_full_interrupt();
+
+        write!(serial, "ESP32C6 > ").ok();
     });
 }
