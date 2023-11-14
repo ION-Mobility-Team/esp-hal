@@ -58,7 +58,11 @@ fn main() -> ! {
         riscv::interrupt::enable();
     }
     critical_section::with(|cs| {
-        write!(SERIAL.borrow_ref_mut(cs).as_mut().unwrap(), "ESP32C6 > ").ok();
+        write!(
+            SERIAL.borrow_ref_mut(cs).as_mut().unwrap(),
+            "\x1b[32mESP32C6 >\x1b[0m "
+        )
+        .ok();
     });
 
     loop {
@@ -73,9 +77,7 @@ fn UART0() {
         let mut serial = SERIAL.borrow_ref_mut(cs);
         let serial = serial.as_mut().unwrap();
 
-        let mut cnt = 0;
         while let nb::Result::Ok(_c) = serial.read() {
-            cnt += 1;
             if _c == 0x8 {
                 cmd.pop();
             } else if _c != b'\n' {
@@ -112,6 +114,6 @@ fn UART0() {
         serial.reset_at_cmd_interrupt();
         serial.reset_rx_fifo_full_interrupt();
 
-        write!(serial, "ESP32C6 > ").ok();
+        write!(serial, "\x1b[32mESP32C6 >\x1b[0m ").ok();
     });
 }
