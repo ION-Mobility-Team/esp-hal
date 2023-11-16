@@ -51,7 +51,7 @@ async fn reader(mut rx: UartRx<'static, UART0>, signal: &'static Signal<NoopRawM
 
     let mut rbuf: [u8; MAX_BUFFER_SIZE] = [0u8; MAX_BUFFER_SIZE];
     loop {
-        let r = embedded_io_async::Read::read(&mut rx, &mut rbuf[offset..]).await;
+        let r = embedded_io_async::Read::read(&mut rx, &mut rbuf).await;
         let mut cmd: String<255> = String::from("");
         match r {
             Ok(len) => {
