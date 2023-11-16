@@ -20,18 +20,19 @@ use esp32c6_hal::{
 use esp_backtrace as _;
 use esp_hal_common::uart::{config::AtCmdConfig, UartRx, UartTx};
 use static_cell::make_static;
+use heapless::String;
 
 // rx_fifo_full_threshold
 const READ_BUF_SIZE: usize = 64;
-// EOT (CTRL-D)
-const AT_CMD: u8 = 0x04;
+// EOT (ENTER)
+const AT_CMD: u8 = 0x0a;
 
 #[embassy_executor::task]
 async fn writer(mut tx: UartTx<'static, UART0>, signal: &'static Signal<NoopRawMutex, usize>) {
     use core::fmt::Write;
     embedded_io_async::Write::write(
         &mut tx,
-        b"Hello async serial. Enter something ended with EOT (CTRL-D).\r\n",
+        b"\x1b[32mESP32C6 >\x1b[0m ",
     )
     .await
     .unwrap();
@@ -49,18 +50,51 @@ async fn reader(mut rx: UartRx<'static, UART0>, signal: &'static Signal<NoopRawM
     const MAX_BUFFER_SIZE: usize = 10 * READ_BUF_SIZE + 16;
 
     let mut rbuf: [u8; MAX_BUFFER_SIZE] = [0u8; MAX_BUFFER_SIZE];
-    let mut offset = 0;
     loop {
         let r = embedded_io_async::Read::read(&mut rx, &mut rbuf[offset..]).await;
+        let mut cmd: String<255> = String::from("");
         match r {
             Ok(len) => {
-                offset += len;
-                esp_println::println!("Read: {len}, data: {:?}", &rbuf[..offset]);
-                offset = 0;
+
+                for i in 0..len {
+                    if rbuf[i] == 0x8 {
+                        cmd.pop();
+                    } else if rbuf[i] != b'\n' && rbuf[i] != 0x0 {
+                        cmd.push(rbuf[i] as char);
+                    }
+                }
                 signal.signal(len);
             }
             Err(e) => esp_println::println!("RX Error: {:?}", e),
         }
+
+        match cmd.as_str() {
+            "help" => {
+                esp_println::print!("\nCommands:\n    command1\n    command2\n    command3\n    command4\n    command5\n");
+            }
+            "command1" => {
+                esp_println::print!("run command1\n");
+            }
+            "command2" => {
+                esp_println::print!("run command2\n");
+            }
+            "command3" => {
+                esp_println::print!("run command3\n");
+            }
+            "command4" => {
+                esp_println::print!("run command4\n");
+            }
+            "command5" => {
+                esp_println::print!("run command5\n");
+            }
+            _ => {
+                if !cmd.is_empty() {
+                    esp_println::print!("Unknown command\n");
+                }
+            }
+        }
+        cmd.clear();
+        esp_println::print!("\x1b[32mESP32C6 >\x1b[0m ");
     }
 }
 
