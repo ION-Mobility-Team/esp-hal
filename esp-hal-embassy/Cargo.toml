@@ -4,7 +4,7 @@ version      = "0.4.0"
 edition      = "2021"
 rust-version = "1.79.0"
 description  = "Embassy support for esp-hal"
-repository   = "https://github.com/esp-rs/esp-hal"
+repository   = "https://github.com/Ion-Mobility/esp-hal"
 license      = "MIT OR Apache-2.0"
 
 [package.metadata.docs.rs]
