@@ -5,7 +5,7 @@ edition       = "2021"
 rust-version  = "1.79.0"
 description   = "Bare-metal HAL for Espressif devices"
 documentation = "https://docs.esp-rs.org/esp-hal/"
-repository    = "https://github.com/Ion-Mobility/esp-hal.git"
+repository    = "https://github.com/esp-rs/esp-hal"
 license       = "MIT OR Apache-2.0"
 links         = "esp-hal"
 
