@@ -826,12 +826,7 @@ mod m2m {
         MODE: Mode,
     {
         fn peripheral_wait_dma(&mut self, _is_rx: bool, _is_tx: bool) {
-            let mut cnt = 0 as u8;
             while !self.channel.rx.is_done() {
-                xtensa_lx::timer::delay(1);
-                if {cnt += 1; cnt } > 5 {
-                    break;
-                }
             }
         }
 

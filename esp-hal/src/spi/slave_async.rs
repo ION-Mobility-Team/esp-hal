@@ -225,7 +225,7 @@ pub mod dma {
                 && !self.spi.is_bus_busy())
             {
                 xtensa_lx::timer::delay(1);
-                if cnt > 5 {
+                if cnt > 20 {
                     break;
                 }
                 cnt += 1;
@@ -712,7 +712,7 @@ pub trait Instance: private::Sealed + PeripheralMarker {
         while self.is_bus_busy() {
             // Wait for bus to be clear
             xtensa_lx::timer::delay(1);
-            if cnt > 5 {
+            if cnt > 20 {
                 break;
             }
             cnt += 1;
