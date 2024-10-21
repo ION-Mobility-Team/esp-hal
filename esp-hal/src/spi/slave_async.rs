@@ -708,8 +708,14 @@ pub trait Instance: private::Sealed + PeripheralMarker {
 
     // Check if the bus is busy and if it is wait for it to be idle
     fn flush(&mut self) -> Result<(), Error> {
+        let mut cnt = 0u8;
         while self.is_bus_busy() {
             // Wait for bus to be clear
+            xtensa_lx::timer::delay(1);
+            if cnt > 5 {
+                break;
+            }
+            cnt += 1;
         }
         Ok(())
     }
