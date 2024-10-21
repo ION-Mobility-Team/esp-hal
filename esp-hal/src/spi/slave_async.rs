@@ -102,16 +102,16 @@ where
         SCK: PeripheralInput,
         MOSI: PeripheralInput,
         MISO: PeripheralOutput,
-        // CS: PeripheralInput,
+        CS: PeripheralInput,
     >(
         spi: impl Peripheral<P = T> + 'd,
         sclk: impl Peripheral<P = SCK> + 'd,
         mosi: impl Peripheral<P = MOSI> + 'd,
         miso: impl Peripheral<P = MISO> + 'd,
-        // cs: impl Peripheral<P = CS> + 'd,
+        cs: impl Peripheral<P = CS> + 'd,
         mode: SpiMode,
     ) -> Spi<'d, T, FullDuplexMode> {
-        crate::into_ref!(spi, sclk, mosi, miso);
+        crate::into_ref!(spi, sclk, mosi, miso, cs);
 
         sclk.enable_input(true, private::Internal);
         sclk.connect_input_to_peripheral(spi.sclk_signal(), private::Internal);
@@ -122,8 +122,8 @@ where
         miso.set_to_push_pull_output(private::Internal);
         miso.connect_peripheral_to_output(spi.miso_signal(), private::Internal);
 
-        // cs.enable_input(true, private::Internal);
-        // cs.connect_input_to_peripheral(spi.cs_signal(), private::Internal);
+        cs.enable_input(true, private::Internal);
+        cs.connect_input_to_peripheral(spi.cs_signal(), private::Internal);
 
         Self::new_internal(spi, mode)
     }
@@ -219,10 +219,17 @@ pub mod dma {
         DmaMode: Mode,
     {
         fn peripheral_wait_dma(&mut self, is_rx: bool, is_tx: bool) {
+            let mut cnt = 0u8;
             while !((!is_tx || self.channel.tx.is_done())
                 && (!is_rx || self.channel.rx.is_done())
                 && !self.spi.is_bus_busy())
-            {}
+            {
+                xtensa_lx::timer::delay(1);
+                if cnt > 5 {
+                    break;
+                }
+                cnt += 1;
+            }
 
             self.spi.flush().ok();
         }
@@ -554,7 +561,7 @@ pub trait Instance: private::Sealed + PeripheralMarker {
 
     fn miso_signal(&self) -> OutputSignal;
 
-    // fn cs_signal(&self) -> InputSignal;
+    fn cs_signal(&self) -> InputSignal;
 
     #[inline(always)]
     fn reset_peripheral(&self) {
@@ -766,16 +773,16 @@ impl Instance for crate::peripherals::SPI2 {
         }
     }
 
-    // #[inline(always)]
-    // fn cs_signal(&self) -> InputSignal {
-    //     cfg_if::cfg_if! {
-    //         if #[cfg(esp32)] {
-    //             InputSignal::HSPICS0
-    //         } else {
-    //             InputSignal::FSPICS0
-    //         }
-    //     }
-    // }
+    #[inline(always)]
+    fn cs_signal(&self) -> InputSignal {
+        cfg_if::cfg_if! {
+            if #[cfg(esp32)] {
+                InputSignal::HSPICS0
+            } else {
+                InputSignal::FSPICS0
+            }
+        }
+    }
 }
 
 #[cfg(spi3)]
@@ -823,14 +830,14 @@ impl Instance for crate::peripherals::SPI3 {
         }
     }
 
-    // #[inline(always)]
-    // fn cs_signal(&self) -> InputSignal {
-    //     cfg_if::cfg_if! {
-    //         if #[cfg(esp32)] {
-    //             InputSignal::VSPICS0
-    //         } else {
-    //             InputSignal::SPI3_CS0
-    //         }
-    //     }
-    // }
+    #[inline(always)]
+    fn cs_signal(&self) -> InputSignal {
+        cfg_if::cfg_if! {
+            if #[cfg(esp32)] {
+                InputSignal::VSPICS0
+            } else {
+                InputSignal::SPI3_CS0
+            }
+        }
+    }
 }
