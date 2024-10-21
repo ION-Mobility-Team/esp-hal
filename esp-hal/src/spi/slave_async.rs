@@ -224,8 +224,8 @@ pub mod dma {
                 && (!is_rx || self.channel.rx.is_done())
                 && !self.spi.is_bus_busy())
             {
-                xtensa_lx::timer::delay(1);
-                if cnt > 20 {
+                delay_ms(100);
+                if cnt > 10 {
                     break;
                 }
                 cnt += 1;
@@ -711,9 +711,9 @@ pub trait Instance: private::Sealed + PeripheralMarker {
         let mut cnt = 0u8;
         while self.is_bus_busy() {
             // Wait for bus to be clear
-            xtensa_lx::timer::delay(1);
-            if cnt > 20 {
-                break;
+            delay_ms(100);
+            if cnt > 10 {
+                return Err(Error::MaxDmaTransferSizeExceeded);
             }
             cnt += 1;
         }
@@ -846,4 +846,10 @@ impl Instance for crate::peripherals::SPI3 {
             }
         }
     }
+}
+
+fn delay_ms(ms: u32) {
+    // let cycles = ms * CYCLES_PER_MS;
+    let cycles = ms * crate::clock::Clocks::xtal_freq().to_kHz();
+    xtensa_lx::timer::delay(cycles);
 }
