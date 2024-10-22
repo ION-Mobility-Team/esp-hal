@@ -26,6 +26,12 @@ pub enum Error {
     /// Error indicating that the FIFO size was exceeded during SPI
     /// communication.
     FifoSizeExeeded,
+    /// Error indicating the SPI bus is busy
+    /// communication.
+    Busy,
+    /// Error indicating the SPI bus timeout
+    /// communication.
+    Timeout,
     /// Error indicating that the operation is unsupported by the current
     /// implementation.
     Unsupported,

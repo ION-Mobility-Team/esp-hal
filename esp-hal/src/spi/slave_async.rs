@@ -219,18 +219,6 @@ pub mod dma {
         DmaMode: Mode,
     {
         fn peripheral_wait_dma(&mut self, is_rx: bool, is_tx: bool) {
-            let mut cnt = 0u8;
-            while !((!is_tx || self.channel.tx.is_done())
-                && (!is_rx || self.channel.rx.is_done())
-                && !self.spi.is_bus_busy())
-            {
-                delay_ms(100);
-                if cnt > 10 {
-                    break;
-                }
-                cnt += 1;
-            }
-
             self.spi.flush().ok();
         }
 
@@ -708,14 +696,8 @@ pub trait Instance: private::Sealed + PeripheralMarker {
 
     // Check if the bus is busy and if it is wait for it to be idle
     fn flush(&mut self) -> Result<(), Error> {
-        let mut cnt = 0u8;
-        while self.is_bus_busy() {
-            // Wait for bus to be clear
-            delay_ms(100);
-            if cnt > 10 {
-                return Err(Error::MaxDmaTransferSizeExceeded);
-            }
-            cnt += 1;
+        if self.is_bus_busy() {
+            return Err(Error::Busy);
         }
         Ok(())
     }
