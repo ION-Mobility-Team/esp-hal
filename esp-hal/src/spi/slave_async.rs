@@ -394,10 +394,16 @@ pub mod dma {
         ///
         pub fn cancel_dma_transfer<'t>(&'t mut self)
         {
-            #[cfg(pdma)]
-            self.register_block()
-                .slave()
-                .modify(|_, w| w.trans_done().set_bit());
+            let reg_block = self.spi.register_block();    
+            reset_dma_before_usr_cmd(reg_block);
+
+            #[cfg(not(esp32))]
+            reg_block
+                .dma_conf()
+                .modify(|_, w| w.dma_slv_seg_trans_en().clear_bit());
+
+            self.spi.clear_dma_interrupts();
+            self.spi.setup_for_flush();
         }
     }
 }
