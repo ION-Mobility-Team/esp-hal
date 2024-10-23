@@ -389,6 +389,16 @@ pub mod dma {
                     .map(move |_| DmaTransferRxTx::new(self))
             }
         }
+
+        /// cancel buffers for a DMA transfer.
+        ///
+        pub fn cancel_dma_transfer<'t>(&'t mut self)
+        {
+            #[cfg(pdma)]
+            self.register_block()
+                .slave()
+                .modify(|_, w| w.trans_done().set_bit());
+        }
     }
 }
 
