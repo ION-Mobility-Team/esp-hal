@@ -394,7 +394,9 @@ pub mod dma {
         ///
         pub fn cancel_dma_transfer<'t>(&'t mut self)
         {
-            let reg_block = self.spi.register_block();    
+            let reg_block = self.spi.register_block();
+
+            // reset_spi(reg_block);
             reset_dma_before_usr_cmd(reg_block);
 
             #[cfg(not(esp32))]
