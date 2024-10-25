@@ -72,9 +72,7 @@ async fn main(_spawner: Spawner) {
     }
 
     loop {
-        for i in 0..send_buffer.len() {
-            send_buffer[i] = send_buffer[i] % 255 + 1;
-        }
+        send_buffer.fill(2);
         let mut buffer = [0u8; SPI_BUFFER_SIZE_BYTE];
         esp_println::println!("reading bytes");
         spi_interrupt_pin.wait_for_rising_edge().await;
