@@ -46,7 +46,8 @@ async fn main(_spawner: Spawner) {
     let miso = Input::new(io.pins.gpio4, Pull::None);
     let mosi = Output::new(io.pins.gpio12, Level::Low);
     let cs = Output::new(io.pins.gpio13, Level::High);
-    let mut spi_interrupt_pin: Input<'static> = Input::new(io.pins.gpio18, Pull::Up);
+    let mut ble_interrupt_pin: Input<'static> = Input::new(io.pins.gpio18, Pull::Up);
+    let mut tm_interrupt_pin: Output<'static> = Output::new(io.pins.gpio19, Level::High);
     let dma = Dma::new(peripherals.DMA);
 
     cfg_if::cfg_if! {
@@ -71,19 +72,25 @@ async fn main(_spawner: Spawner) {
         send_buffer[i] = i as u8;
     }
 
+    let mut cnt: u8 = 0u8;
     loop {
-        send_buffer.fill(2);
+        cnt = (cnt + 1) % (u8::MAX);
+        send_buffer.fill(cnt);
         let mut buffer = [0u8; SPI_BUFFER_SIZE_BYTE];
         esp_println::println!("reading bytes");
-        spi_interrupt_pin.wait_for_rising_edge().await;
+        ble_interrupt_pin.wait_for_rising_edge().await;
         Timer::after(Duration::from_millis(10)).await;
         embedded_hal_async::spi::SpiBus::transfer(&mut spi, &mut buffer, &send_buffer)
             .await
             .unwrap();
 
-        if spi_interrupt_pin.is_low() {
-            spi_interrupt_pin.wait_for_high().await;
+        if ble_interrupt_pin.is_low() {
+            ble_interrupt_pin.wait_for_high().await;
         }
+
+        tm_interrupt_pin.set_low();
+        Timer::after(Duration::from_millis(1000)).await;
+        tm_interrupt_pin.set_high();
 
         esp_println::println!("Bytes received: {:?}", buffer);
     }
