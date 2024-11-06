@@ -67,19 +67,14 @@ async fn main(_spawner: Spawner) {
         .with_dma(dma_channel.configure_for_async(false, DmaPriority::Priority0))
         .with_buffers(dma_rx_buf, dma_tx_buf);
 
-    let mut send_buffer = [0u8; SPI_BUFFER_SIZE_BYTE];
-    for i in 0..send_buffer.len() {
-        send_buffer[i] = i as u8;
-    }
-
     let mut cnt: u8 = 0u8;
     loop {
         cnt = (cnt + 1) % (u8::MAX);
-        send_buffer.fill(cnt);
+        let mut send_buffer = [cnt; SPI_BUFFER_SIZE_BYTE];
         let mut buffer = [0u8; SPI_BUFFER_SIZE_BYTE];
         esp_println::println!("reading bytes");
         ble_interrupt_pin.wait_for_rising_edge().await;
-        Timer::after(Duration::from_millis(10)).await;
+        Timer::after(Duration::from_millis(1)).await;
         embedded_hal_async::spi::SpiBus::transfer(&mut spi, &mut buffer, &send_buffer)
             .await
             .unwrap();
