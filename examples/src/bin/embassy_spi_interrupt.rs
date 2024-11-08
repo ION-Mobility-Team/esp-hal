@@ -31,7 +31,7 @@ use esp_hal::{
 };
 use esp_println::println;
 
-const SPI_BUFFER_SIZE_BYTE: usize   = 128;
+const SPI_BUFFER_SIZE_BYTE: usize   = 256;
 
 #[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
