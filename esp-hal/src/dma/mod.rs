@@ -2765,6 +2765,12 @@ where
     pub fn is_done(&mut self) -> bool {
         self.instance.tx().is_done() && self.instance.rx().is_done()
     }
+
+    /// Check if the rx finished.
+    /// should be used for spi slave only as it's up to master to stop transfer
+    pub fn is_rx_done(&mut self) -> bool {
+        self.instance.rx().is_done()
+    }      
 }
 
 impl<I> Drop for DmaTransferRxTx<'_, I>

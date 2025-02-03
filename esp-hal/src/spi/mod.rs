@@ -15,6 +15,7 @@ pub mod master;
 
 crate::unstable_module! {
     pub mod slave;
+    pub mod slave_async;
 }
 
 /// SPI errors
