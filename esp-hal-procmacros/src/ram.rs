@@ -1,46 +1,55 @@
-use darling::{ast::NestedMeta, Error, FromMeta};
-use proc_macro::{Span, TokenStream};
-use proc_macro2::Ident;
-use proc_macro_error2::abort;
-use syn::{parse, Item};
-
-#[derive(Debug, Default, darling::FromMeta)]
-#[darling(default)]
-struct RamArgs {
-    rtc_fast: bool,
-    rtc_slow: bool,
-    persistent: bool,
-    zeroed: bool,
-}
+use proc_macro::TokenStream;
+use proc_macro2::{Ident, Span};
+use syn::{Item, Token, parse, parse::Parser, punctuated::Punctuated};
 
 pub fn ram(args: TokenStream, input: TokenStream) -> TokenStream {
-    let attr_args = match NestedMeta::parse_meta_list(args.into()) {
+    let attr_args = match Punctuated::<syn::Meta, Token![,]>::parse_terminated.parse2(args.into()) {
         Ok(v) => v,
-        Err(e) => {
-            return TokenStream::from(Error::from(e).write_errors());
-        }
+        Err(e) => return e.to_compile_error().into(),
     };
 
-    let RamArgs {
-        rtc_fast,
-        rtc_slow,
-        persistent,
-        zeroed,
-    } = match FromMeta::from_list(&attr_args) {
-        Ok(v) => v,
-        Err(e) => {
-            return e.write_errors().into();
+    let mut rtc_fast = false;
+    let mut rtc_slow = false;
+    let mut persistent = false;
+    let mut zeroed = false;
+
+    for attr_arg in &attr_args {
+        if let syn::Meta::Path(path) = attr_arg {
+            let ident = match path.require_ident() {
+                Ok(i) => i,
+                Err(e) => return e.into_compile_error().into(),
+            };
+            let arg = match ident {
+                i if i == "rtc_fast" => &mut rtc_fast,
+                i if i == "rtc_slow" => &mut rtc_slow,
+                i if i == "persistent" => &mut persistent,
+                i if i == "zeroed" => &mut zeroed,
+                i => {
+                    return syn::Error::new(i.span(), format!("Unknown argument `{i}`"))
+                        .into_compile_error()
+                        .into();
+                }
+            };
+
+            if *arg {
+                return syn::Error::new(ident.span(), format!("Argument `{ident}` is already set"))
+                    .into_compile_error()
+                    .into();
+            }
+            *arg = true;
         }
-    };
+    }
 
     let item: Item = parse(input).expect("failed to parse input");
 
     #[cfg(not(feature = "rtc-slow"))]
     if rtc_slow {
-        abort!(
+        return syn::Error::new(
             Span::call_site(),
-            "rtc_slow is not available for this target"
-        );
+            "rtc_slow is not available for this target",
+        )
+        .into_compile_error()
+        .into();
     }
 
     let is_fn = matches!(item, Item::Fn(_));
@@ -64,14 +73,16 @@ pub fn ram(args: TokenStream, input: TokenStream) -> TokenStream {
 
     let section = match (is_fn, section_name) {
         (true, Ok(section_name)) => quote::quote! {
-            #[link_section = #section_name]
+            #[unsafe(link_section = #section_name)]
             #[inline(never)] // make certain function is not inlined
         },
         (false, Ok(section_name)) => quote::quote! {
-            #[link_section = #section_name]
+            #[unsafe(link_section = #section_name)]
         },
         (_, Err(_)) => {
-            abort!(Span::call_site(), "Invalid combination of ram arguments");
+            return syn::Error::new(Span::call_site(), "Invalid combination of ram arguments")
+                .into_compile_error()
+                .into();
         }
     };
 
@@ -83,20 +94,19 @@ pub fn ram(args: TokenStream, input: TokenStream) -> TokenStream {
         None
     };
     let trait_check = trait_check.map(|name| {
-        use proc_macro_crate::{crate_name, FoundCrate};
+        use proc_macro_crate::{FoundCrate, crate_name};
 
         let hal = Ident::new(
-            if let Ok(FoundCrate::Name(ref name)) = crate_name("esp-hal") {
-                name
-            } else {
-                "crate"
+            match crate_name("esp-hal") {
+                Ok(FoundCrate::Name(ref name)) => name,
+                _ => "crate",
             },
-            Span::call_site().into(),
+            Span::call_site(),
         );
 
         let assertion = quote::format_ident!("assert_is_{name}");
         let Item::Static(ref item) = item else {
-            abort!(item, "Expected a `static`");
+            return syn::Error::new(Span::call_site(), "Expected a `static`").into_compile_error();
         };
         let ty = &item.ty;
         quote::quote! {

@@ -5,8 +5,9 @@ use crate::{
     efuse::Efuse,
     gpio::RtcFunction,
     rtc_cntl::{
+        Rtc,
+        RtcClock,
         rtc::{
-            rtc_clk_cpu_freq_set_xtal,
             HpAnalog,
             HpSysCntlReg,
             HpSysPower,
@@ -14,6 +15,7 @@ use crate::{
             LpSysPower,
             RtcCalSel,
             SavedClockConfig,
+            rtc_clk_cpu_freq_set_xtal,
         },
         sleep::{
             Ext1WakeupSource,
@@ -23,8 +25,6 @@ use crate::{
             WakeTriggers,
             WakeupLevel,
         },
-        Rtc,
-        RtcClock,
     },
 };
 
@@ -41,7 +41,7 @@ impl WakeSource for TimerWakeupSource {
         let clock_freq = RtcClock::slow_freq();
         // TODO: maybe add sleep time adjustment like idf
         // TODO: maybe add check to prevent overflow?
-        let clock_hz = clock_freq.frequency().to_Hz() as u64;
+        let clock_hz = clock_freq.frequency().as_hz() as u64;
         let ticks = self.duration.as_micros() as u64 * clock_hz / 1_000_000u64;
         // "alarm" time in slow rtc ticks
         let now = rtc.time_since_boot_raw();
@@ -72,7 +72,7 @@ impl Ext1WakeupSource<'_, '_> {
     }
 
     fn wake_io_reset() {
-        use crate::gpio::{GpioPin, RtcPin};
+        use crate::gpio::RtcPin;
 
         fn uninit_pin(pin: impl RtcPin, wakeup_pins: u8) {
             if wakeup_pins & (1 << pin.number()) != 0 {
@@ -82,14 +82,14 @@ impl Ext1WakeupSource<'_, '_> {
         }
 
         let wakeup_pins = Ext1WakeupSource::wakeup_pins();
-        uninit_pin(unsafe { GpioPin::<0>::steal() }, wakeup_pins);
-        uninit_pin(unsafe { GpioPin::<1>::steal() }, wakeup_pins);
-        uninit_pin(unsafe { GpioPin::<2>::steal() }, wakeup_pins);
-        uninit_pin(unsafe { GpioPin::<3>::steal() }, wakeup_pins);
-        uninit_pin(unsafe { GpioPin::<4>::steal() }, wakeup_pins);
-        uninit_pin(unsafe { GpioPin::<5>::steal() }, wakeup_pins);
-        uninit_pin(unsafe { GpioPin::<6>::steal() }, wakeup_pins);
-        uninit_pin(unsafe { GpioPin::<7>::steal() }, wakeup_pins);
+        uninit_pin(unsafe { crate::peripherals::GPIO0::steal() }, wakeup_pins);
+        uninit_pin(unsafe { crate::peripherals::GPIO1::steal() }, wakeup_pins);
+        uninit_pin(unsafe { crate::peripherals::GPIO2::steal() }, wakeup_pins);
+        uninit_pin(unsafe { crate::peripherals::GPIO3::steal() }, wakeup_pins);
+        uninit_pin(unsafe { crate::peripherals::GPIO4::steal() }, wakeup_pins);
+        uninit_pin(unsafe { crate::peripherals::GPIO5::steal() }, wakeup_pins);
+        uninit_pin(unsafe { crate::peripherals::GPIO6::steal() }, wakeup_pins);
+        uninit_pin(unsafe { crate::peripherals::GPIO7::steal() }, wakeup_pins);
     }
 }
 
@@ -646,7 +646,7 @@ impl SleepTimeConfig {
 
         // Calibrate rtc slow clock
         // TODO: do an actual calibration instead of a read
-        let slowclk_period = unsafe { lp_aon().store1().read().lp_aon_store1().bits() };
+        let slowclk_period = unsafe { lp_aon().store1().read().data().bits() };
 
         // Calibrate rtc fast clock, only PMU supported chips sleep process is needed.
         const FAST_CLK_SRC_CAL_CYCLES: u32 = 2048;
@@ -730,7 +730,7 @@ impl SleepTimeConfig {
         #[rustfmt::skip] // ASCII art
         //  When the SOC wakeup (lp timer or GPIO wakeup) and Modem wakeup (Beacon wakeup) complete,
         // the soc wakeup will be delayed until the RF is turned on in Modem state.
-        // 
+        //
         //              modem wakeup                      TBTT, RF on by HW
         //                   |                                    |
         //                  \|/                                  \|/
@@ -744,7 +744,7 @@ impl SleepTimeConfig {
         //                   |                                                                  |
         //                   |<--      PMU guard time, also the maximum time for the SOC     -->|
         //                   |                           wake-up delay                          |
-        // 
+        //
         const CONFIG_ESP_WIFI_ENHANCED_LIGHT_SLEEP: bool = true;
 
         let (rf_on_protect_time_us, sync_time_us) = if CONFIG_ESP_WIFI_ENHANCED_LIGHT_SLEEP {
@@ -783,11 +783,11 @@ impl Default for RtcSleepConfig {
 }
 
 unsafe fn pmu<'a>() -> &'a esp32c6::pmu::RegisterBlock {
-    &*esp32c6::PMU::ptr()
+    unsafe { &*esp32c6::PMU::ptr() }
 }
 
 unsafe fn lp_aon<'a>() -> &'a esp32c6::lp_aon::RegisterBlock {
-    &*esp32c6::LP_AON::ptr()
+    unsafe { &*esp32c6::LP_AON::ptr() }
 }
 
 bitfield::bitfield! {
@@ -1025,7 +1025,7 @@ impl RtcSleepConfig {
             // misc_modules_sleep_prepare
 
             // TODO: IDF-7370
-            #[cfg(not(pmu))]
+            #[cfg(not(soc_has_pmu))]
             if !(self.deep && wakeup_triggers.touch) {
                 let saradc = &*esp32c6::APB_SARADC::ptr();
                 saradc

@@ -201,16 +201,11 @@ impl InternalBurstConfig {
     // Size and address alignment as those come in pairs on current hardware.
     const fn min_dram_alignment(self, direction: TransferDirection) -> usize {
         if matches!(direction, TransferDirection::In) {
-            // NOTE(danielb): commenting this check is incorrect as per TRM, but works.
-            //                we'll need to restore this once peripherals can read a
-            //                different amount of data than what is configured in the
-            //                buffer.
-            // if cfg!(esp32) {
-            //     // NOTE: The size must be word-aligned.
-            //     // NOTE: The buffer address must be word-aligned
-            //     4
-            // }
-            if self.is_burst_enabled() {
+            if cfg!(esp32) {
+                // NOTE: The size must be word-aligned.
+                // NOTE: The buffer address must be word-aligned
+                4
+            } else if self.is_burst_enabled() {
                 // As described in "Accessing Internal Memory" paragraphs in the various TRMs.
                 4
             } else {
@@ -234,11 +229,7 @@ impl InternalBurstConfig {
 }
 
 const fn max(a: usize, b: usize) -> usize {
-    if a > b {
-        a
-    } else {
-        b
-    }
+    if a > b { a } else { b }
 }
 
 impl BurstConfig {
@@ -309,14 +300,14 @@ impl BurstConfig {
         direction: TransferDirection,
     ) -> Result<(), DmaAlignmentError> {
         let alignment = self.min_alignment(buffer, direction);
-        if buffer.as_ptr() as usize % alignment != 0 {
+        if !(buffer.as_ptr() as usize).is_multiple_of(alignment) {
             return Err(DmaAlignmentError::Address);
         }
 
         // NB: the TRMs suggest that buffer length don't need to be aligned, but
         // for IN transfers, we configure the DMA descriptors' size field, which needs
         // to be aligned.
-        if direction == TransferDirection::In && buffer.len() % alignment != 0 {
+        if direction == TransferDirection::In && !buffer.len().is_multiple_of(alignment) {
             return Err(DmaAlignmentError::Size);
         }
 
@@ -402,6 +393,17 @@ pub struct Preparation {
     /// Note: If the DMA channel doesn't support the provided option,
     /// preparation will fail.
     pub check_owner: Option<bool>,
+
+    /// Configures whether the DMA channel automatically clears the
+    /// [DmaDescriptor::owner] bit after it is done with the buffer pointed
+    /// to by a descriptor.
+    ///
+    /// For RX transfers, this is always true and the value specified here is
+    /// ignored.
+    ///
+    /// Note: SPI_DMA on the ESP32 does not support this and will panic if set
+    /// to true.
+    pub auto_write_back: bool,
 }
 
 /// [DmaTxBuffer] is a DMA descriptor + memory combo that can be used for
@@ -569,7 +571,17 @@ impl DmaTxBuf {
         self.descriptors.set_tx_length(
             len,
             burst.max_chunk_size_for(self.buffer, TransferDirection::Out),
-        )
+        )?;
+
+        // This only needs to be done once (after every significant length change) as
+        // Self::prepare sets Preparation::auto_write_back to false.
+        for desc in self.descriptors.linked_iter_mut() {
+            // In non-circular mode, we only set `suc_eof` for the last descriptor to signal
+            // the end of the transfer.
+            desc.reset_for_tx(desc.next.is_null());
+        }
+
+        Ok(())
     }
 
     /// Reset the descriptors to only transmit `len` amount of bytes from this
@@ -606,12 +618,6 @@ unsafe impl DmaTxBuffer for DmaTxBuf {
     type View = BufView<DmaTxBuf>;
 
     fn prepare(&mut self) -> Preparation {
-        for desc in self.descriptors.linked_iter_mut() {
-            // In non-circular mode, we only set `suc_eof` for the last descriptor to signal
-            // the end of the transfer.
-            desc.reset_for_tx(desc.next.is_null());
-        }
-
         cfg_if::cfg_if! {
             if #[cfg(psram_dma)] {
                 let is_data_in_psram = !is_valid_ram_address(self.buffer.as_ptr() as usize);
@@ -633,6 +639,7 @@ unsafe impl DmaTxBuffer for DmaTxBuf {
             accesses_psram: is_data_in_psram,
             burst_transfer: self.burst,
             check_owner: None,
+            auto_write_back: false,
         }
     }
 
@@ -670,13 +677,29 @@ impl DmaRxBuf {
         descriptors: &'static mut [DmaDescriptor],
         buffer: &'static mut [u8],
     ) -> Result<Self, DmaBufError> {
+        Self::new_with_config(descriptors, buffer, BurstConfig::default())
+    }
+
+    /// Creates a new [DmaRxBuf] from some descriptors and a buffer.
+    ///
+    /// There must be enough descriptors for the provided buffer.
+    /// Depending on alignment requirements, each descriptor can handle at most
+    /// 4092 bytes worth of buffer.
+    ///
+    /// Both the descriptors and buffer must be in DMA-capable memory.
+    /// Only DRAM is supported for descriptors.
+    pub fn new_with_config(
+        descriptors: &'static mut [DmaDescriptor],
+        buffer: &'static mut [u8],
+        config: impl Into<BurstConfig>,
+    ) -> Result<Self, DmaBufError> {
         let mut buf = Self {
             descriptors: DescriptorSet::new(descriptors)?,
             buffer,
             burst: BurstConfig::default(),
         };
 
-        buf.configure(buf.burst, buf.capacity())?;
+        buf.configure(config, buf.capacity())?;
 
         Ok(buf)
     }
@@ -770,6 +793,8 @@ impl DmaRxBuf {
     ///
     /// Returns the number of bytes in written to `buf`.
     pub fn read_received_data(&self, mut buf: &mut [u8]) -> usize {
+        // Note that due to an ESP32 quirk, the last received descriptor may not get
+        // updated.
         let capacity = buf.len();
         for chunk in self.received_data() {
             if buf.is_empty() {
@@ -825,6 +850,7 @@ unsafe impl DmaRxBuffer for DmaRxBuf {
             accesses_psram: is_data_in_psram,
             burst_transfer: self.burst,
             check_owner: None,
+            auto_write_back: true,
         }
     }
 
@@ -1006,6 +1032,7 @@ unsafe impl DmaTxBuffer for DmaRxTxBuf {
             accesses_psram: is_data_in_psram,
             burst_transfer: self.burst,
             check_owner: None,
+            auto_write_back: false,
         }
     }
 
@@ -1048,6 +1075,7 @@ unsafe impl DmaRxBuffer for DmaRxTxBuf {
             accesses_psram: is_data_in_psram,
             burst_transfer: self.burst,
             check_owner: None,
+            auto_write_back: true,
         }
     }
 
@@ -1189,6 +1217,7 @@ unsafe impl DmaRxBuffer for DmaRxStreamBuf {
             // No descriptor is added back to the end of the stream before it's ready for the DMA
             // to consume it.
             check_owner: None,
+            auto_write_back: true,
         }
     }
 
@@ -1385,9 +1414,8 @@ unsafe impl DmaTxBuffer for EmptyBuf {
     type View = EmptyBuf;
 
     fn prepare(&mut self) -> Preparation {
-        #[allow(unused_unsafe)] // stable requires unsafe, nightly complains about it
         Preparation {
-            start: unsafe { core::ptr::addr_of_mut!(EMPTY).cast() },
+            start: core::ptr::addr_of_mut!(EMPTY).cast(),
             direction: TransferDirection::Out,
             #[cfg(psram_dma)]
             accesses_psram: false,
@@ -1396,6 +1424,9 @@ unsafe impl DmaTxBuffer for EmptyBuf {
             // As we don't give ownership of the descriptor to the DMA, it's important that the DMA
             // channel does *NOT* check for ownership, otherwise the channel will return an error.
             check_owner: Some(false),
+
+            // The DMA should not write back to the descriptor as it is shared.
+            auto_write_back: false,
         }
     }
 
@@ -1412,9 +1443,8 @@ unsafe impl DmaRxBuffer for EmptyBuf {
     type View = EmptyBuf;
 
     fn prepare(&mut self) -> Preparation {
-        #[allow(unused_unsafe)] // stable requires unsafe, nightly complains about it
         Preparation {
-            start: unsafe { core::ptr::addr_of_mut!(EMPTY).cast() },
+            start: core::ptr::addr_of_mut!(EMPTY).cast(),
             direction: TransferDirection::In,
             #[cfg(psram_dma)]
             accesses_psram: false,
@@ -1423,6 +1453,7 @@ unsafe impl DmaRxBuffer for EmptyBuf {
             // As we don't give ownership of the descriptor to the DMA, it's important that the DMA
             // channel does *NOT* check for ownership, otherwise the channel will return an error.
             check_owner: Some(false),
+            auto_write_back: true,
         }
     }
 
@@ -1496,6 +1527,9 @@ unsafe impl DmaTxBuffer for DmaLoopBuf {
             burst_transfer: BurstConfig::default(),
             // The DMA must not check the owner bit, as it is never set.
             check_owner: Some(false),
+
+            // Doesn't matter either way but it is set to true for ESP32 SPI_DMA compatibility.
+            auto_write_back: false,
         }
     }
 

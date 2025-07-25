@@ -7,26 +7,27 @@
 #![no_main]
 
 #[cfg(pcnt)]
-use esp_hal::pcnt::{channel::EdgeMode, unit::Unit, Pcnt};
+use esp_hal::pcnt::{Pcnt, channel::EdgeMode, unit::Unit};
 use esp_hal::{
+    Blocking,
     dma::{DmaRxBuf, DmaTxBuf},
     dma_buffers,
     gpio::{AnyPin, Input, InputConfig, Level, Output, OutputConfig, Pull},
     spi::{
-        master::{Address, Command, Config, Spi, SpiDma},
-        DataMode,
         Mode,
+        master::{Address, Command, Config, DataMode, Spi, SpiDma},
     },
-    time::RateExtU32,
-    Blocking,
+    time::Rate,
 };
 use hil_test as _;
 
+esp_bootloader_esp_idf::esp_app_desc!();
+
 cfg_if::cfg_if! {
     if #[cfg(pdma)] {
-        use esp_hal::dma::Spi2DmaChannel as DmaChannel0;
+        type DmaChannel0<'d> = esp_hal::peripherals::DMA_SPI2<'d>;
     } else {
-        use esp_hal::dma::DmaChannel0;
+        type DmaChannel0<'d> = esp_hal::peripherals::DMA_CH0<'d>;
     }
 }
 
@@ -43,9 +44,9 @@ type SpiUnderTest = SpiDma<'static, Blocking>;
 struct Context {
     spi: Spi<'static, Blocking>,
     #[cfg(pcnt)]
-    pcnt: esp_hal::peripherals::PCNT,
-    dma_channel: DmaChannel0,
-    gpios: [AnyPin; 3],
+    pcnt: esp_hal::peripherals::PCNT<'static>,
+    dma_channel: DmaChannel0<'static>,
+    gpios: [AnyPin<'static>; 3],
 }
 
 fn transfer_read(
@@ -198,9 +199,9 @@ mod tests {
 
         // Make sure pins have no pullups
         let config = InputConfig::default().with_pull(Pull::Down);
-        let _ = Input::new(&mut pin, config).unwrap();
-        let _ = Input::new(&mut pin_mirror, config).unwrap();
-        let _ = Input::new(&mut unconnected_pin, config).unwrap();
+        let _ = Input::new(pin.reborrow(), config);
+        let _ = Input::new(pin_mirror.reborrow(), config);
+        let _ = Input::new(unconnected_pin.reborrow(), config);
 
         cfg_if::cfg_if! {
             if #[cfg(pdma)] {
@@ -213,7 +214,7 @@ mod tests {
         let spi = Spi::new(
             peripherals.SPI2,
             Config::default()
-                .with_frequency(100.kHz())
+                .with_frequency(Rate::from_khz(100))
                 .with_mode(Mode::_0),
         )
         .unwrap();
@@ -230,8 +231,7 @@ mod tests {
     #[test]
     fn test_spi_reads_correctly_from_gpio_pin_0(ctx: Context) {
         let [pin, pin_mirror, _] = ctx.gpios;
-        let pin_mirror =
-            Output::new(pin_mirror, OutputConfig::default().with_level(Level::High)).unwrap();
+        let pin_mirror = Output::new(pin_mirror, Level::High, OutputConfig::default());
 
         let spi = ctx.spi.with_sio0(pin).with_dma(ctx.dma_channel);
 
@@ -241,8 +241,7 @@ mod tests {
     #[test]
     fn test_spi_reads_correctly_from_gpio_pin_1(ctx: Context) {
         let [pin, pin_mirror, _] = ctx.gpios;
-        let pin_mirror =
-            Output::new(pin_mirror, OutputConfig::default().with_level(Level::High)).unwrap();
+        let pin_mirror = Output::new(pin_mirror, Level::High, OutputConfig::default());
 
         let spi = ctx.spi.with_sio1(pin).with_dma(ctx.dma_channel);
 
@@ -252,8 +251,7 @@ mod tests {
     #[test]
     fn test_spi_reads_correctly_from_gpio_pin_2(ctx: Context) {
         let [pin, pin_mirror, _] = ctx.gpios;
-        let pin_mirror =
-            Output::new(pin_mirror, OutputConfig::default().with_level(Level::High)).unwrap();
+        let pin_mirror = Output::new(pin_mirror, Level::High, OutputConfig::default());
 
         let spi = ctx.spi.with_sio2(pin).with_dma(ctx.dma_channel);
 
@@ -263,8 +261,7 @@ mod tests {
     #[test]
     fn test_spi_reads_correctly_from_gpio_pin_3(ctx: Context) {
         let [pin, pin_mirror, _] = ctx.gpios;
-        let pin_mirror =
-            Output::new(pin_mirror, OutputConfig::default().with_level(Level::High)).unwrap();
+        let pin_mirror = Output::new(pin_mirror, Level::High, OutputConfig::default());
 
         let spi = ctx.spi.with_sio3(pin).with_dma(ctx.dma_channel);
 
@@ -274,8 +271,7 @@ mod tests {
     #[test]
     fn test_spi_writes_and_reads_correctly_pin_0(ctx: Context) {
         let [pin, pin_mirror, _] = ctx.gpios;
-        let pin_mirror =
-            Output::new(pin_mirror, OutputConfig::default().with_level(Level::High)).unwrap();
+        let pin_mirror = Output::new(pin_mirror, Level::High, OutputConfig::default());
 
         let spi = ctx.spi.with_sio0(pin).with_dma(ctx.dma_channel);
 
@@ -285,8 +281,7 @@ mod tests {
     #[test]
     fn test_spi_writes_and_reads_correctly_pin_1(ctx: Context) {
         let [pin, pin_mirror, _] = ctx.gpios;
-        let pin_mirror =
-            Output::new(pin_mirror, OutputConfig::default().with_level(Level::High)).unwrap();
+        let pin_mirror = Output::new(pin_mirror, Level::High, OutputConfig::default());
 
         let spi = ctx.spi.with_sio1(pin).with_dma(ctx.dma_channel);
 
@@ -296,8 +291,7 @@ mod tests {
     #[test]
     fn test_spi_writes_and_reads_correctly_pin_2(ctx: Context) {
         let [pin, pin_mirror, _] = ctx.gpios;
-        let pin_mirror =
-            Output::new(pin_mirror, OutputConfig::default().with_level(Level::High)).unwrap();
+        let pin_mirror = Output::new(pin_mirror, Level::High, OutputConfig::default());
 
         let spi = ctx.spi.with_sio2(pin).with_dma(ctx.dma_channel);
 
@@ -307,8 +301,7 @@ mod tests {
     #[test]
     fn test_spi_writes_and_reads_correctly_pin_3(ctx: Context) {
         let [pin, pin_mirror, _] = ctx.gpios;
-        let pin_mirror =
-            Output::new(pin_mirror, OutputConfig::default().with_level(Level::High)).unwrap();
+        let pin_mirror = Output::new(pin_mirror, Level::High, OutputConfig::default());
 
         let spi = ctx.spi.with_sio3(pin).with_dma(ctx.dma_channel);
 
@@ -326,7 +319,7 @@ mod tests {
         let unit0 = pcnt.unit0;
         let unit1 = pcnt.unit1;
 
-        let (mosi_loopback, mosi) = mosi.split();
+        let (mosi_loopback, mosi) = unsafe { mosi.split() };
 
         unit0.channel0.set_edge_signal(mosi_loopback);
         unit0
@@ -349,8 +342,8 @@ mod tests {
         let unit0 = pcnt.unit0;
         let unit1 = pcnt.unit1;
 
-        let (mosi_loopback, mosi) = mosi.split();
-        let (gpio_loopback, gpio) = gpio.split();
+        let (mosi_loopback, mosi) = unsafe { mosi.split() };
+        let (gpio_loopback, gpio) = unsafe { gpio.split() };
 
         unit0.channel0.set_edge_signal(mosi_loopback);
         unit0
@@ -382,8 +375,8 @@ mod tests {
         let unit0 = pcnt.unit0;
         let unit1 = pcnt.unit1;
 
-        let (mosi_loopback, mosi) = mosi.split();
-        let (gpio_loopback, gpio) = gpio.split();
+        let (mosi_loopback, mosi) = unsafe { mosi.split() };
+        let (gpio_loopback, gpio) = unsafe { gpio.split() };
 
         unit0.channel0.set_edge_signal(mosi_loopback);
         unit0
@@ -415,8 +408,8 @@ mod tests {
         let unit0 = pcnt.unit0;
         let unit1 = pcnt.unit1;
 
-        let (mosi_loopback, mosi) = mosi.split();
-        let (gpio_loopback, gpio) = gpio.split();
+        let (mosi_loopback, mosi) = unsafe { mosi.split() };
+        let (gpio_loopback, gpio) = unsafe { gpio.split() };
 
         unit0.channel0.set_edge_signal(mosi_loopback);
         unit0

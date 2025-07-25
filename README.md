@@ -42,25 +42,25 @@ For information relating to the development of Rust applications on ESP devices,
 
 For information about the HAL and how to use it in your own projects, please refer to the [documentation].
 
-When browsing the examples, we recommend viewing the tag for the `esp-hal` release you are using to ensure compatibility, e.g. [v0.23.1], as the `main` branch is used for development and APIs may have changed in the meantime.
+When browsing the examples, we recommend viewing the tag for the `esp-hal` release you are using to ensure compatibility, e.g. [esp-hal-v1.0.0-beta.0], as the `main` branch is used for development and APIs may have changed in the meantime.
 
-[The Rust on ESP Book]: https://esp-rs.github.io/book/
-[documentation]: https://docs.esp-rs.org/esp-hal/
-[v0.23.1]: https://github.com/esp-rs/esp-hal/tree/v0.23.1/examples
+[The Rust on ESP Book]: https://docs.espressif.com/projects/rust/book/
+[documentation]: https://docs.espressif.com/projects/rust/
+[esp-hal-v1.0.0-beta.0]: https://github.com/esp-rs/esp-hal/tree/esp-hal-v1.0.0-beta.0/examples
 
 ## Resources
 
 - [The Rust Programming Language](https://doc.rust-lang.org/book/)
 - [The Embedded Rust Book](https://docs.rust-embedded.org/book/index.html)
 - [The Embedonomicon](https://docs.rust-embedded.org/embedonomicon/)
-- [The Rust on ESP Book](https://esp-rs.github.io/book/)
+- [The Rust on ESP Book](https://docs.espressif.com/projects/rust/esp-hal/latest/)
 - [Embedded Rust (no_std) on Espressif](https://esp-rs.github.io/no_std-training/)
 
 ## Contributing
 
 We have a number of living documents to aid contributing to the project, please give these a read before modifying code:
 
-- [API-GUIDELINES](https://github.com/esp-rs/esp-hal/blob/main/documentation/API-GUIDELINES.md)
+- [DEVELOPER-GUIDELINES](https://github.com/esp-rs/esp-hal/blob/main/documentation/DEVELOPER-GUIDELINES.md)
 - [CONTRIBUTING-GUIDE](https://github.com/esp-rs/esp-hal/blob/main/documentation/CONTRIBUTING.md)
 
 ## License

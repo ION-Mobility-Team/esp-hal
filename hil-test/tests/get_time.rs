@@ -1,4 +1,4 @@
-//! time::now Test
+//! time::Instant::now Test
 
 //% CHIPS: esp32 esp32c2 esp32c3 esp32c6 esp32h2 esp32s2 esp32s3
 //% FEATURES: unstable
@@ -9,14 +9,16 @@
 use esp_hal::delay::Delay;
 use hil_test as _;
 
+esp_bootloader_esp_idf::esp_app_desc!();
+
 struct Context {
     delay: Delay,
 }
 
 fn time_moves_forward_during<F: FnOnce(Context)>(ctx: Context, f: F) {
-    let t1 = esp_hal::time::now();
+    let t1 = esp_hal::time::Instant::now();
     f(ctx);
-    let t2 = esp_hal::time::now();
+    let t2 = esp_hal::time::Instant::now();
 
     assert!(t2 > t1);
 }
@@ -37,12 +39,12 @@ mod tests {
 
     #[test]
     fn test_current_time(ctx: Context) {
-        let t1 = esp_hal::time::now();
+        let t1 = esp_hal::time::Instant::now();
         ctx.delay.delay_millis(500);
-        let t2 = esp_hal::time::now();
+        let t2 = esp_hal::time::Instant::now();
 
         assert!(t2 > t1);
-        assert!((t2 - t1).to_millis() >= 500u64);
+        assert!((t2 - t1).as_millis() >= 500u64);
     }
 
     #[cfg(systimer)]

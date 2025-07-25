@@ -15,13 +15,15 @@ use esp_hal::{
     clock::CpuClock,
     interrupt::{
         self,
-        software::{SoftwareInterrupt, SoftwareInterruptControl},
         CpuInterrupt,
         Priority,
+        software::{SoftwareInterrupt, SoftwareInterruptControl},
     },
     peripherals::Interrupt,
 };
 use hil_test as _;
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 static SWINT0: Mutex<RefCell<Option<SoftwareInterrupt<0>>>> = Mutex::new(RefCell::new(None));
 
@@ -30,7 +32,7 @@ struct Context {
     sw0_trigger_addr: u32,
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 fn interrupt20() {
     unsafe { asm!("csrrwi x0, 0x7e1, 0 #disable timer") }
     critical_section::with(|cs| {
@@ -77,7 +79,7 @@ mod tests {
             }
         }
 
-        let sw0_trigger_addr = cpu_intr.register_block().cpu_intr_from_cpu_0() as *const _ as u32;
+        let sw0_trigger_addr = cpu_intr.register_block().cpu_intr_from_cpu(0) as *const _ as u32;
 
         critical_section::with(|cs| {
             SWINT0

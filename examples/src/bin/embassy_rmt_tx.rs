@@ -16,11 +16,13 @@ use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::{
     gpio::Level,
-    rmt::{PulseCode, Rmt, TxChannelAsync, TxChannelConfig, TxChannelCreatorAsync},
-    time::RateExtU32,
+    rmt::{PulseCode, Rmt, TxChannelAsync, TxChannelConfig, TxChannelCreator},
+    time::Rate,
     timer::timg::TimerGroup,
 };
 use esp_println::println;
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 #[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
@@ -32,9 +34,9 @@ async fn main(_spawner: Spawner) {
 
     cfg_if::cfg_if! {
         if #[cfg(feature = "esp32h2")] {
-            let freq = 32.MHz();
+            let freq = Rate::from_mhz(32);
         } else {
-            let freq = 80.MHz();
+            let freq = Rate::from_mhz(80);
         }
     };
 
@@ -42,7 +44,7 @@ async fn main(_spawner: Spawner) {
 
     let mut channel = rmt
         .channel0
-        .configure(
+        .configure_tx(
             peripherals.GPIO4,
             TxChannelConfig::default().with_clk_divider(255),
         )

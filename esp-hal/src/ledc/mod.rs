@@ -1,3 +1,4 @@
+#![cfg_attr(docsrs, procmacros::doc_replace)]
 //! # LED Controller (LEDC)
 //!
 //! ## Overview
@@ -25,7 +26,7 @@
 //! range 0..100.
 //!
 //! ```rust, no_run
-#![doc = crate::before_snippet!()]
+//! # {before_snippet}
 //! # use esp_hal::ledc::Ledc;
 //! # use esp_hal::ledc::LSGlobalClkSource;
 //! # use esp_hal::ledc::timer::{self, TimerIFace};
@@ -37,34 +38,30 @@
 //! ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
 //!
 //! let mut lstimer0 = ledc.timer::<LowSpeed>(timer::Number::Timer0);
-//! lstimer0
-//!     .configure(timer::config::Config {
-//!         duty: timer::config::Duty::Duty5Bit,
-//!         clock_source: timer::LSClockSource::APBClk,
-//!         frequency: 24.kHz(),
-//!     })
-//!     .unwrap();
+//! lstimer0.configure(timer::config::Config {
+//!     duty: timer::config::Duty::Duty5Bit,
+//!     clock_source: timer::LSClockSource::APBClk,
+//!     frequency: Rate::from_khz(24),
+//! })?;
 //!
 //! let mut channel0 = ledc.channel(channel::Number::Channel0, led);
-//! channel0
-//!     .configure(channel::config::Config {
-//!         timer: &lstimer0,
-//!         duty_pct: 10,
-//!         pin_config: channel::config::PinConfig::PushPull,
-//!     })
-//!     .unwrap();
+//! channel0.configure(channel::config::Config {
+//!     timer: &lstimer0,
+//!     duty_pct: 10,
+//!     pin_config: channel::config::PinConfig::PushPull,
+//! })?;
 //!
 //! loop {
 //!     // Set up a breathing LED: fade from off to on over a second, then
 //!     // from on back off over the next second.  Then loop.
-//!     channel0.start_duty_fade(0, 100, 1000).unwrap();
+//!     channel0.start_duty_fade(0, 100, 1000)?;
 //!     while channel0.is_duty_fade_running() {}
-//!     channel0.start_duty_fade(100, 0, 1000).unwrap();
+//!     channel0.start_duty_fade(100, 0, 1000)?;
 //!     while channel0.is_duty_fade_running() {}
 //! }
 //! # }
 //! ```
-//! 
+//!
 //! ## Implementation State
 //! - Source clock selection is not supported
 //! - Interrupts are not supported
@@ -76,7 +73,6 @@ use self::{
 use crate::{
     gpio::interconnect::PeripheralOutput,
     pac,
-    peripheral::{Peripheral, PeripheralRef},
     peripherals::LEDC,
     system::{Peripheral as PeripheralEnable, PeripheralClockControl},
 };
@@ -93,14 +89,16 @@ pub enum LSGlobalClkSource {
 
 /// LEDC (LED PWM Controller)
 pub struct Ledc<'d> {
-    _instance: PeripheralRef<'d, LEDC>,
+    _instance: LEDC<'d>,
     ledc: &'d pac::ledc::RegisterBlock,
 }
 
 #[cfg(esp32)]
+#[derive(Clone, Copy)]
 /// Used to specify HighSpeed Timer/Channel
 pub struct HighSpeed {}
 
+#[derive(Clone, Copy)]
 /// Used to specify LowSpeed Timer/Channel
 pub struct LowSpeed {}
 
@@ -121,9 +119,7 @@ impl Speed for LowSpeed {
 
 impl<'d> Ledc<'d> {
     /// Return a new LEDC
-    pub fn new(_instance: impl Peripheral<P = LEDC> + 'd) -> Self {
-        crate::into_ref!(_instance);
-
+    pub fn new(_instance: LEDC<'d>) -> Self {
         if PeripheralClockControl::enable(PeripheralEnable::Ledc) {
             PeripheralClockControl::reset(PeripheralEnable::Ledc);
         }
@@ -180,7 +176,7 @@ impl<'d> Ledc<'d> {
     pub fn channel<S: TimerSpeed>(
         &self,
         number: channel::Number,
-        output_pin: impl Peripheral<P = impl PeripheralOutput> + 'd,
+        output_pin: impl PeripheralOutput<'d>,
     ) -> Channel<'d, S> {
         Channel::new(number, output_pin)
     }

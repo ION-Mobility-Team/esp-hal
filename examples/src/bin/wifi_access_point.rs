@@ -1,14 +1,16 @@
 //! Access point
 //!
 //! Creates an open access-point with SSID `esp-wifi`.
-//! You can connect to it using a static IP in range 192.168.2.2 .. 192.168.2.255, gateway 192.168.2.1
+//! You can connect to it using a static IP in range 192.168.2.2 ..
+//! 192.168.2.255, gateway 192.168.2.1
 //!
 //! Open http://192.168.2.1:8080/ in your browser
 //!
-//! On Android you might need to choose _Keep Accesspoint_ when it tells you the WiFi has no internet connection, Chrome might not want to load the URL - you can use a shell and try `curl` and `ping`
-//!
+//! On Android you might need to choose _Keep Accesspoint_ when it tells you the
+//! WiFi has no internet connection, Chrome might not want to load the URL - you
+//! can use a shell and try `curl` and `ping`
 
-//% FEATURES: esp-wifi esp-wifi/wifi esp-wifi/utils esp-hal/unstable
+//% FEATURES: esp-wifi esp-wifi/wifi esp-wifi/smoltcp esp-hal/unstable
 //% CHIPS: esp32 esp32s2 esp32s3 esp32c2 esp32c3 esp32c6
 
 #![no_std]
@@ -26,17 +28,14 @@ use esp_hal::{
     timer::timg::TimerGroup,
 };
 use esp_println::{print, println};
-use esp_wifi::{
-    init,
-    wifi::{
-        event::{self, EventExt},
-        utils::create_network_interface,
-        AccessPointConfiguration,
-        Configuration,
-        WifiApDevice,
-    },
+use esp_wifi::wifi::{
+    AccessPointConfiguration,
+    Configuration,
+    event::{self, EventExt},
 };
 use smoltcp::iface::{SocketSet, SocketStorage};
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 #[main]
 fn main() -> ! {
@@ -44,9 +43,10 @@ fn main() -> ! {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
-    esp_alloc::heap_allocator!(72 * 1024);
+    esp_alloc::heap_allocator!(size: 72 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
+    esp_radio_preempt_baremetal::init(timg0.timer0);
 
     // Set event handlers for wifi before init to avoid missing any.
     let mut connections = 0u32;
@@ -66,21 +66,23 @@ fn main() -> ! {
         );
     });
 
-    let mut rng = Rng::new(peripherals.RNG);
+    let esp_wifi_ctrl = esp_wifi::init().unwrap();
 
-    let init = init(timg0.timer0, rng.clone(), peripherals.RADIO_CLK).unwrap();
+    let (mut controller, interfaces) =
+        esp_wifi::wifi::new(&esp_wifi_ctrl, peripherals.WIFI).unwrap();
 
-    let mut wifi = peripherals.WIFI;
-    let (iface, device, mut controller) =
-        create_network_interface(&init, &mut wifi, WifiApDevice).unwrap();
-    let now = || time::now().duration_since_epoch().to_millis();
+    let mut device = interfaces.ap;
+    let iface = create_interface(&mut device);
 
+    let now = || time::Instant::now().duration_since_epoch().as_millis();
+
+    let rng = Rng::new();
     let mut socket_set_entries: [SocketStorage; 3] = Default::default();
     let socket_set = SocketSet::new(&mut socket_set_entries[..]);
     let mut stack = Stack::new(iface, device, socket_set, now, rng.random());
 
     let client_config = Configuration::AccessPoint(AccessPointConfiguration {
-        ssid: "esp-wifi".try_into().unwrap(),
+        ssid: "esp-wifi".into(),
         ..Default::default()
     });
     let res = controller.set_configuration(&client_config);
@@ -109,7 +111,9 @@ fn main() -> ! {
         ))
         .unwrap();
 
-    println!("Start busy loop on main. Connect to the AP `esp-wifi` and point your browser to http://192.168.2.1:8080/");
+    println!(
+        "Start busy loop on main. Connect to the AP `esp-wifi` and point your browser to http://192.168.2.1:8080/"
+    );
     println!("Use a static IP in the range 192.168.2.2 .. 192.168.2.255, use gateway 192.168.2.1");
 
     let mut rx_buffer = [0u8; 1536];
@@ -129,7 +133,7 @@ fn main() -> ! {
             println!("Connected");
 
             let mut time_out = false;
-            let deadline = time::now() + Duration::secs(20);
+            let deadline = time::Instant::now() + Duration::from_secs(20);
             let mut buffer = [0u8; 1024];
             let mut pos = 0;
             while let Ok(len) = socket.read(&mut buffer[pos..]) {
@@ -143,7 +147,7 @@ fn main() -> ! {
 
                 pos += len;
 
-                if time::now() > deadline {
+                if time::Instant::now() > deadline {
                     println!("Timeout");
                     time_out = true;
                     break;
@@ -172,8 +176,8 @@ fn main() -> ! {
             println!();
         }
 
-        let deadline = time::now() + Duration::secs(5);
-        while time::now() < deadline {
+        let start = time::Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
             socket.work();
         }
     }
@@ -185,4 +189,25 @@ fn parse_ip(ip: &str) -> [u8; 4] {
         result[idx] = u8::from_str_radix(octet, 10).unwrap();
     }
     result
+}
+
+// some smoltcp boilerplate
+fn timestamp() -> smoltcp::time::Instant {
+    smoltcp::time::Instant::from_micros(
+        esp_hal::time::Instant::now()
+            .duration_since_epoch()
+            .as_micros() as i64,
+    )
+}
+
+pub fn create_interface(device: &mut esp_wifi::wifi::WifiDevice) -> smoltcp::iface::Interface {
+    // users could create multiple instances but since they only have one WifiDevice
+    // they probably can't do anything bad with that
+    smoltcp::iface::Interface::new(
+        smoltcp::iface::Config::new(smoltcp::wire::HardwareAddress::Ethernet(
+            smoltcp::wire::EthernetAddress::from_bytes(&device.mac_address()),
+        )),
+        device,
+        timestamp(),
+    )
 }

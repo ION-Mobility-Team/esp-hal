@@ -1,12 +1,38 @@
 #![doc = include_str!("../README.md")]
+//! ## Feature Flags
+#![doc = document_features::document_features!()]
 #![doc(html_logo_url = "https://avatars.githubusercontent.com/u/46717278")]
 #![allow(rustdoc::bare_urls)]
 #![no_std]
 
 #[cfg(feature = "defmt-espflash")]
 pub mod defmt;
-#[cfg(feature = "log")]
+#[cfg(feature = "log-04")]
 pub mod logger;
+
+macro_rules! log_format {
+    ($value:expr) => {
+        #[unsafe(link_section = concat!(".espressif.metadata"))]
+        #[used]
+        #[unsafe(export_name = concat!("espflash.LOG_FORMAT"))]
+        static LOG_FORMAT: [u8; $value.len()] = const {
+            let val_bytes = $value.as_bytes();
+            let mut val_bytes_array = [0; $value.len()];
+            let mut i = 0;
+            while i < val_bytes.len() {
+                val_bytes_array[i] = val_bytes[i];
+                i += 1;
+            }
+            val_bytes_array
+        };
+    };
+}
+
+#[cfg(feature = "defmt-espflash")]
+log_format!("defmt-espflash");
+
+#[cfg(not(feature = "defmt-espflash"))]
+log_format!("serial");
 
 /// Prints to the selected output, with a newline.
 #[cfg(not(feature = "no-op"))]
@@ -109,15 +135,14 @@ type PrinterImpl = auto_printer::Printer;
         feature = "esp32c3",
         feature = "esp32c6",
         feature = "esp32h2",
-        feature = "esp32p4",    // as mentioned in 'build.rs'
         feature = "esp32s3"
     )
 ))]
 mod auto_printer {
     use crate::{
+        LockToken,
         serial_jtag_printer::Printer as PrinterSerialJtag,
         uart_printer::Printer as PrinterUart,
-        LockToken,
     };
 
     pub struct Printer;
@@ -135,8 +160,6 @@ mod auto_printer {
             const USB_DEVICE_INT_RAW: *const u32 = 0x6000f008 as *const u32;
             #[cfg(feature = "esp32h2")]
             const USB_DEVICE_INT_RAW: *const u32 = 0x6000f008 as *const u32;
-            #[cfg(feature = "esp32p4")]
-            const USB_DEVICE_INT_RAW: *const u32 = unimplemented!();
             #[cfg(feature = "esp32s3")]
             const USB_DEVICE_INT_RAW: *const u32 = 0x60038000 as *const u32;
 
@@ -169,7 +192,6 @@ mod auto_printer {
         feature = "esp32c3",
         feature = "esp32c6",
         feature = "esp32h2",
-        feature = "esp32p4",
         feature = "esp32s3"
     ))
 ))]
@@ -184,7 +206,6 @@ mod auto_printer {
         feature = "esp32c3",
         feature = "esp32c6",
         feature = "esp32h2",
-        feature = "esp32p4",
         feature = "esp32s3"
     )
 ))]
@@ -203,11 +224,6 @@ mod serial_jtag_printer {
     const SERIAL_JTAG_FIFO_REG: usize = 0x6000_F000;
     #[cfg(any(feature = "esp32c6", feature = "esp32h2"))]
     const SERIAL_JTAG_CONF_REG: usize = 0x6000_F004;
-
-    #[cfg(feature = "esp32p4")]
-    const SERIAL_JTAG_FIFO_REG: usize = 0x500D_2000;
-    #[cfg(feature = "esp32p4")]
-    const SERIAL_JTAG_CONF_REG: usize = 0x500D_2004;
 
     #[cfg(feature = "esp32s3")]
     const SERIAL_JTAG_FIFO_REG: usize = 0x6003_8000;
@@ -437,23 +453,6 @@ mod uart_printer {
         }
     }
 
-    #[cfg(feature = "esp32p4")]
-    impl Functions for Device {
-        const TX_ONE_CHAR: usize = 0x4FC0_0054;
-
-        fn flush() {
-            unsafe {
-                const TX_FLUSH: usize = 0x4FC0_0074;
-                const GET_CHANNEL: usize = 0x4FC0_0038;
-
-                let tx_flush: unsafe extern "C" fn(u8) = core::mem::transmute(TX_FLUSH);
-                let get_channel: unsafe extern "C" fn() -> u8 = core::mem::transmute(GET_CHANNEL);
-
-                tx_flush(get_channel());
-            }
-        }
-    }
-
     pub struct Printer;
     impl Printer {
         pub fn write_bytes_in_cs(bytes: &[u8], _token: LockToken<'_>) {
@@ -484,12 +483,14 @@ struct LockToken<'a>(LockInner<'a>);
 impl LockToken<'_> {
     #[allow(unused)]
     unsafe fn conjure() -> Self {
-        #[cfg(feature = "critical-section")]
-        let inner = critical_section::CriticalSection::new();
-        #[cfg(not(feature = "critical-section"))]
-        let inner = PhantomData;
+        unsafe {
+            #[cfg(feature = "critical-section")]
+            let inner = critical_section::CriticalSection::new();
+            #[cfg(not(feature = "critical-section"))]
+            let inner = PhantomData;
 
-        LockToken(inner)
+            LockToken(inner)
+        }
     }
 }
 

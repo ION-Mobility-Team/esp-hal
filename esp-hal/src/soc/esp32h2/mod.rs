@@ -12,35 +12,17 @@
 
 crate::unstable_module! {
     pub mod efuse;
-    pub mod radio_clocks;
     pub mod trng;
 }
 pub mod gpio;
-pub mod peripherals;
+pub(crate) mod regi2c;
 
-/// The name of the chip ("esp32h2") as `&str`
-#[macro_export]
-macro_rules! chip {
-    () => {
-        "esp32h2"
-    };
-}
+pub(crate) use esp32h2 as pac;
 
-/// A link to the Technical Reference Manual (TRM) for the chip.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! trm_link {
-    () => { "https://www.espressif.com/sites/default/files/documentation/esp32-h2_technical_reference_manual_en.pdf" };
-}
-
-pub use chip;
-
-#[allow(unused)]
-pub(crate) mod registers {
-    pub const INTERRUPT_MAP_BASE: u32 = 0x60010000;
-}
-
+#[cfg_attr(not(feature = "unstable"), allow(unused))]
 pub(crate) mod constants {
+    use crate::time::Rate;
+
     /// Default clock source for the timer group (TIMG) peripheral.
     pub const TIMG_DEFAULT_CLK_SRC: u8 = 2;
 
@@ -49,24 +31,35 @@ pub(crate) mod constants {
     /// Clock frequency for the I2S peripheral, in Hertz.
     pub const I2S_SCLK: u32 = 96_000_000;
 
-    /// Start address of the RMT (Remote Control) peripheral's RAM.
-    pub const RMT_RAM_START: usize = 0x60007400;
-    /// The size (number of pulse codes) of each RMT channel's dedicated RAM.
-    pub const RMT_CHANNEL_RAM_SIZE: usize = 48;
     /// Clock source for the RMT peripheral (false = default source).
     pub const RMT_CLOCK_SRC: bool = false;
     /// Frequency of the RMT clock source, in Hertz.
-    pub const RMT_CLOCK_SRC_FREQ: fugit::HertzU32 = fugit::HertzU32::MHz(32);
+    pub const RMT_CLOCK_SRC_FREQ: Rate = Rate::from_mhz(32);
 
     /// System clock frequency for the parallel I/O (PARL IO) peripheral, in
     /// Hertz.
     pub const PARL_IO_SCLK: u32 = 96_000_000;
 
-    /// Start address of the system's DRAM (low range).
-    pub const SOC_DRAM_LOW: usize = 0x4080_0000;
-    /// End address of the system's DRAM (high range).
-    pub const SOC_DRAM_HIGH: usize = 0x4085_0000;
-
     /// RC FAST Clock value (Hertz).
-    pub const RC_FAST_CLK: fugit::HertzU32 = fugit::HertzU32::kHz(17500);
+    pub const RC_FAST_CLK: Rate = Rate::from_khz(17500);
+}
+
+pub(crate) fn pre_init() {
+    // By default, these access path filters are enable and allow the access to
+    // masters only if they are in TEE mode.
+    //
+    // Since all masters except HP CPU boot in REE mode, default setting of these
+    // filters will deny the access by all masters except HP CPU.
+    //
+    // So, disabling these filters early.
+
+    crate::peripherals::LP_APM::regs()
+        .func_ctrl()
+        .write(|w| unsafe { w.bits(0x0) });
+    crate::peripherals::LP_APM0::regs()
+        .func_ctrl()
+        .write(|w| unsafe { w.bits(0x0) });
+    crate::peripherals::HP_APM::regs()
+        .func_ctrl()
+        .write(|w| unsafe { w.bits(0x0) });
 }

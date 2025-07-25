@@ -1,89 +1,20 @@
-use std::{error::Error as StdError, str::FromStr};
+use std::error::Error as StdError;
 
-use esp_build::assert_unique_used_features;
-use esp_config::{generate_config, Error, Validator, Value};
-use esp_metadata::{Chip, Config};
+use esp_config::{Value, generate_config_from_yaml_definition};
 
 fn main() -> Result<(), Box<dyn StdError>> {
-    // NOTE: update when adding new device support!
-    // Ensure that exactly one chip has been specified:
-    assert_unique_used_features!(
-        "esp32", "esp32c2", "esp32c3", "esp32c6", "esp32h2", "esp32s2", "esp32s3"
-    );
-
-    // NOTE: update when adding new device support!
-    // Determine the name of the configured device:
-    let device_name = if cfg!(feature = "esp32") {
-        "esp32"
-    } else if cfg!(feature = "esp32c2") {
-        "esp32c2"
-    } else if cfg!(feature = "esp32c3") {
-        "esp32c3"
-    } else if cfg!(feature = "esp32c6") {
-        "esp32c6"
-    } else if cfg!(feature = "esp32h2") {
-        "esp32h2"
-    } else if cfg!(feature = "esp32s2") {
-        "esp32s2"
-    } else if cfg!(feature = "esp32s3") {
-        "esp32s3"
-    } else {
-        unreachable!() // We've confirmed exactly one known device was selected
-    };
-
-    // Load the configuration file for the configured device:
-    let chip = Chip::from_str(device_name)?;
-    let config = Config::for_chip(&chip);
+    // Load the configuration for the configured device:
+    let chip = esp_metadata_generated::Chip::from_cargo_feature()?;
 
     // Define all necessary configuration symbols for the configured device:
-    config.define_symbols();
+    chip.define_cfgs();
 
     // emit config
-    let crate_config = generate_config(
-        "esp_hal_embassy",
-        &[(
-            "low-power-wait",
-            "Enables the lower-power wait if no tasks are ready to run on the thread-mode executor. This allows the MCU to use less power if the workload allows. Recommended for battery-powered systems. May impact analog performance.",
-            Value::Bool(true),
-            None
-        ),
-        (
-            "timer-queue",
-            "<p>The flavour of the timer queue provided by this crate. Accepts one of `single-integrated`, `multiple-integrated` or `generic`. Integrated queues require the `executors` feature to be enabled.</p><p>If you use embassy-executor, the `single-integrated` queue is recommended for ease of use, while the `multiple-integrated` queue is recommended for performance. The `multiple-integrated` option needs one timer per executor.</p><p>The `generic` queue allows using embassy-time without the embassy executors.</p>",
-            Value::String(if cfg!(feature = "executors") {
-                String::from("single-integrated")
-            } else {
-                String::from("generic")
-            }),
-            Some(Validator::Custom(Box::new(|value| {
-                let Value::String(string) = value else {
-                    return Err(Error::Validation(String::from("Expected a string")));
-                };
-
-                if !cfg!(feature = "executors") {
-                    if string.as_str() != "generic" {
-                        return Err(Error::Validation(format!("Expected 'generic' because the `executors` feature is not enabled. Found {string}")));
-                    }
-                    return Ok(());
-                }
-
-                match string.as_str() {
-                    "single-integrated" => Ok(()), // preferred for ease of use
-                    "multiple-integrated" => Ok(()), // preferred for performance
-                    "generic" => Ok(()), // allows using embassy-time without the embassy executors
-                    _ => Err(Error::Validation(format!("Expected 'single-integrated', 'multiple-integrated' or 'generic', found {string}")))
-                }
-            })))
-        ),
-        (
-            "generic-queue-size",
-            "The capacity of the queue when the `generic` timer queue flavour is selected.",
-            Value::Integer(64),
-            Some(Validator::PositiveInteger),
-        ),
-    ],
-        true,
-    );
+    println!("cargo:rerun-if-changed=./esp_config.yml");
+    let cfg_yaml = std::fs::read_to_string("./esp_config.yml")
+        .expect("Failed to read esp_config.yml for esp-hal-embassy");
+    let crate_config =
+        generate_config_from_yaml_definition(&cfg_yaml, true, true, Some(chip)).unwrap();
 
     println!("cargo:rustc-check-cfg=cfg(integrated_timers)");
     println!("cargo:rustc-check-cfg=cfg(single_queue)");

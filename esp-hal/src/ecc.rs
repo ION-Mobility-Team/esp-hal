@@ -12,8 +12,7 @@
 //!
 //! ## Configuration
 //! ECC Accelerator supports:
-//! - Two different elliptic curves, namely P-192 and P-256 defined in FIPS
-//!   186-3.
+//! - Two different elliptic curves, namely P-192 and P-256 defined in FIPS 186-3.
 //! - Seven working modes.
 //! - Interrupt upon completion of calculation.
 //!
@@ -28,19 +27,18 @@
 use core::marker::PhantomData;
 
 use crate::{
-    interrupt::{InterruptConfigurable, InterruptHandler},
-    pac,
-    peripheral::{Peripheral, PeripheralRef},
-    peripherals::{Interrupt, ECC},
-    reg_access::{AlignmentHelper, SocDependentEndianess},
-    system::{self, GenericPeripheralGuard},
     Blocking,
     DriverMode,
+    interrupt::InterruptHandler,
+    pac,
+    peripherals::{ECC, Interrupt},
+    reg_access::{AlignmentHelper, SocDependentEndianess},
+    system::{self, GenericPeripheralGuard},
 };
 
 /// The ECC Accelerator driver instance
 pub struct Ecc<'d, Dm: DriverMode> {
-    ecc: PeripheralRef<'d, ECC>,
+    ecc: ECC<'d>,
     alignment_helper: AlignmentHelper<SocDependentEndianess>,
     phantom: PhantomData<Dm>,
     _guard: GenericPeripheralGuard<{ system::Peripheral::Ecc as u8 }>,
@@ -102,9 +100,7 @@ pub enum WorkMode {
 
 impl<'d> Ecc<'d, Blocking> {
     /// Create a new instance in [Blocking] mode.
-    pub fn new(ecc: impl Peripheral<P = ECC> + 'd) -> Self {
-        crate::into_ref!(ecc);
-
+    pub fn new(ecc: ECC<'d>) -> Self {
         let guard = GenericPeripheralGuard::new();
 
         Self {
@@ -118,13 +114,10 @@ impl<'d> Ecc<'d, Blocking> {
 
 impl crate::private::Sealed for Ecc<'_, Blocking> {}
 
-impl InterruptConfigurable for Ecc<'_, Blocking> {
+#[instability::unstable]
+impl crate::interrupt::InterruptConfigurable for Ecc<'_, Blocking> {
     fn set_interrupt_handler(&mut self, handler: InterruptHandler) {
-        for core in crate::Cpu::other() {
-            crate::interrupt::disable(core, Interrupt::ECC);
-        }
-        unsafe { crate::interrupt::bind_interrupt(Interrupt::ECC, handler.handler()) };
-        unwrap!(crate::interrupt::enable(Interrupt::ECC, handler.priority()));
+        self.set_interrupt_handler(handler);
     }
 }
 
@@ -443,7 +436,7 @@ impl<Dm: DriverMode> Ecc<'_, Dm> {
     ///
     /// This function will return an error if the point is not on the selected
     /// elliptic curve.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     #[cfg(esp32h2)]
     pub fn affine_point_verification_multiplication(
         &mut self,
@@ -987,6 +980,19 @@ impl<Dm: DriverMode> Ecc<'_, Dm> {
         }
 
         Ok(())
+    }
+
+    /// Register an interrupt handler for the ECC peripheral.
+    ///
+    /// Note that this will replace any previously registered interrupt
+    /// handlers.
+    #[instability::unstable]
+    pub fn set_interrupt_handler(&mut self, handler: InterruptHandler) {
+        for core in crate::system::Cpu::other() {
+            crate::interrupt::disable(core, Interrupt::ECC);
+        }
+        unsafe { crate::interrupt::bind_interrupt(Interrupt::ECC, handler.handler()) };
+        unwrap!(crate::interrupt::enable(Interrupt::ECC, handler.priority()));
     }
 
     fn is_busy(&self) -> bool {

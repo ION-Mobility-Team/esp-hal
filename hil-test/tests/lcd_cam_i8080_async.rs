@@ -7,23 +7,26 @@
 #![no_main]
 
 use esp_hal::{
-    dma::{DmaChannel0, DmaTxBuf},
+    Async,
+    dma::DmaTxBuf,
     dma_buffers,
     gpio::NoPin,
     lcd_cam::{
-        lcd::i8080::{Command, Config, TxEightBits, I8080},
         LcdCam,
+        lcd::i8080::{Command, Config, I8080, TxEightBits},
     },
-    time::RateExtU32,
-    Async,
+    peripherals::DMA_CH0,
+    time::Rate,
 };
 use hil_test as _;
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 const DATA_SIZE: usize = 1024 * 10;
 
 struct Context<'d> {
     lcd_cam: LcdCam<'d, Async>,
-    dma: DmaChannel0,
+    dma: DMA_CH0<'d>,
     dma_buf: DmaTxBuf,
 }
 
@@ -51,11 +54,12 @@ mod tests {
     async fn test_i8080_8bit(ctx: Context<'static>) {
         let pins = TxEightBits::new(NoPin, NoPin, NoPin, NoPin, NoPin, NoPin, NoPin, NoPin);
 
-        let i8080 = I8080::new(ctx.lcd_cam.lcd, ctx.dma, pins, {
-            let mut config = Config::default();
-            config.frequency = 20.MHz();
-            config
-        })
+        let i8080 = I8080::new(
+            ctx.lcd_cam.lcd,
+            ctx.dma,
+            pins,
+            Config::default().with_frequency(Rate::from_mhz(20)),
+        )
         .unwrap();
 
         // explicitly drop the camera half to see if it disables clocks (unexpectedly,

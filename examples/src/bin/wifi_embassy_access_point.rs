@@ -1,15 +1,16 @@
 //! Embassy access point
 //!
 //! - creates an open access-point with SSID `esp-wifi`
-//! - you can connect to it using a static IP in range 192.168.2.2 .. 192.168.2.255, gateway 192.168.2.1
-//! - open http://192.168.2.1:8080/ in your browser - the example will perform an HTTP get request to some "random" server
+//! - you can connect to it using a static IP in range 192.168.2.2 .. 192.168.2.255, gateway
+//!   192.168.2.1
+//! - open http://192.168.2.1:8080/ in your browser - the example will perform an HTTP get request
+//!   to some "random" server
 //!
-//! On Android you might need to choose _Keep Accesspoint_ when it tells you the WiFi has no internet connection, Chrome might not want to load the URL - you can use a shell and try `curl` and `ping`
-//!
-//! Because of the huge task-arena size configured this won't work on ESP32-S2
-//!
+//! On Android you might need to choose _Keep Accesspoint_ when it tells you the
+//! WiFi has no internet connection, Chrome might not want to load the URL - you
+//! can use a shell and try `curl` and `ping`
 
-//% FEATURES: embassy esp-wifi esp-wifi/wifi esp-wifi/utils esp-wifi/sniffer esp-hal/unstable
+//% FEATURES: embassy esp-wifi esp-wifi/wifi esp-hal/unstable
 //% CHIPS: esp32 esp32s2 esp32s3 esp32c2 esp32c3 esp32c6
 
 #![no_std]
@@ -19,13 +20,13 @@ use core::{net::Ipv4Addr, str::FromStr};
 
 use embassy_executor::Spawner;
 use embassy_net::{
-    tcp::TcpSocket,
     IpListenEndpoint,
     Ipv4Cidr,
     Runner,
     Stack,
     StackResources,
     StaticConfigV4,
+    tcp::TcpSocket,
 };
 use embassy_time::{Duration, Timer};
 use esp_alloc as _;
@@ -33,18 +34,18 @@ use esp_backtrace as _;
 use esp_hal::{clock::CpuClock, rng::Rng, timer::timg::TimerGroup};
 use esp_println::{print, println};
 use esp_wifi::{
-    init,
+    EspWifiController,
     wifi::{
         AccessPointConfiguration,
         Configuration,
-        WifiApDevice,
         WifiController,
         WifiDevice,
         WifiEvent,
         WifiState,
     },
-    EspWifiController,
 };
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 // When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
 macro_rules! mk_static {
@@ -64,19 +65,16 @@ async fn main(spawner: Spawner) -> ! {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
-    esp_alloc::heap_allocator!(72 * 1024);
+    esp_alloc::heap_allocator!(size: 72 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    let mut rng = Rng::new(peripherals.RNG);
+    esp_radio_preempt_baremetal::init(timg0.timer0);
 
-    let init = &*mk_static!(
-        EspWifiController<'static>,
-        init(timg0.timer0, rng.clone(), peripherals.RADIO_CLK).unwrap()
-    );
+    let esp_wifi_ctrl = &*mk_static!(EspWifiController<'static>, esp_wifi::init().unwrap());
 
-    let wifi = peripherals.WIFI;
-    let (wifi_interface, controller) =
-        esp_wifi::wifi::new_with_mode(&init, wifi, WifiApDevice).unwrap();
+    let (controller, interfaces) = esp_wifi::wifi::new(esp_wifi_ctrl, peripherals.WIFI).unwrap();
+
+    let device = interfaces.ap;
 
     cfg_if::cfg_if! {
         if #[cfg(feature = "esp32")] {
@@ -98,11 +96,12 @@ async fn main(spawner: Spawner) -> ! {
         dns_servers: Default::default(),
     });
 
+    let rng = Rng::new();
     let seed = (rng.random() as u64) << 32 | rng.random() as u64;
 
     // Init network stack
     let (stack, runner) = embassy_net::new(
-        wifi_interface,
+        device,
         config,
         mk_static!(StackResources<3>, StackResources::<3>::new()),
         seed,
@@ -273,6 +272,6 @@ async fn connection(mut controller: WifiController<'static>) {
 }
 
 #[embassy_executor::task]
-async fn net_task(mut runner: Runner<'static, WifiDevice<'static, WifiApDevice>>) {
+async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
     runner.run().await
 }

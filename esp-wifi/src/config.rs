@@ -17,7 +17,6 @@ pub(crate) struct EspWifiConfig {
     pub(crate) country_code: &'static str,
     pub(crate) country_code_operating_class: u8,
     pub(crate) mtu: usize,
-    pub(crate) tick_rate_hz: u32,
     pub(crate) listen_interval: u16,
     pub(crate) beacon_timeout: u16,
     pub(crate) ap_beacon_timeout: u16,
@@ -25,17 +24,15 @@ pub(crate) struct EspWifiConfig {
     pub(crate) scan_method: u32,
 }
 
-#[cfg(not(coex))]
 #[non_exhaustive]
 #[derive(Default)]
 pub enum PowerSaveMode {
-    None,
     #[default]
+    None,
     Minimum,
     Maximum,
 }
 
-#[cfg(not(coex))]
 impl From<PowerSaveMode> for esp_wifi_sys::include::wifi_ps_type_t {
     fn from(s: PowerSaveMode) -> Self {
         match s {

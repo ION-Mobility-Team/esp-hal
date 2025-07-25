@@ -13,26 +13,27 @@ use esp_backtrace as _;
 use esp_hal::{
     etm::Etm,
     gpio::{
-        etm::{Channels, OutputConfig as EtmOutputConfig},
         Level,
         Output,
         OutputConfig,
         Pull,
+        etm::{Channels, OutputConfig as EtmOutputConfig},
     },
     main,
-    time::ExtU64,
+    time::Duration,
     timer::{
-        systimer::{etm::Event, SystemTimer},
         PeriodicTimer,
+        systimer::{SystemTimer, etm::Event},
     },
 };
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 #[main]
 fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
 
-    let config = OutputConfig::default().with_level(Level::Low);
-    let mut led = Output::new(peripherals.GPIO2, config).unwrap();
+    let mut led = Output::new(peripherals.GPIO2, Level::Low, OutputConfig::default());
     led.set_high();
 
     let syst = SystemTimer::new(peripherals.SYSTIMER);
@@ -51,7 +52,7 @@ fn main() -> ! {
         },
     );
 
-    let etm = Etm::new(peripherals.SOC_ETM);
+    let etm = Etm::new(peripherals.ETM);
     let channel0 = etm.channel0;
 
     // make sure the configured channel doesn't get dropped - dropping it will
@@ -59,7 +60,7 @@ fn main() -> ! {
     let _configured_channel = channel0.setup(&timer_event, &led_task);
 
     let mut timer = PeriodicTimer::new(alarm);
-    timer.start(1u64.secs()).unwrap();
+    timer.start(Duration::from_secs(1)).unwrap();
 
     // the LED is controlled by the button without involving the CPU
     loop {}

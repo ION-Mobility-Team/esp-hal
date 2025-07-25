@@ -1,30 +1,81 @@
 name: Documentation
 
 on:
+  pull_request:
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
-      esp-hal:
-        description: "esp-hal tag"
-        required: true
-      esp-wifi:
-        description: "esp-wifi tag"
-        required: true
+      packages:
+        description: >
+          A JSON structure describing the packages to build.
+          E.g: [{"name":"esp-hal","tag":"v0.23.1"},{"name":"esp-wifi","tag":"esp-wifi-v0.12"}]
+
+          NOTE: You can run `cargo xtask release tag-releases` to get the json output generated for this workflow.
+
+          If you want to build all packages, leave this field empty.
+        required: false
+      server:
+        type: choice
+        description: Which server to deploy to
+        options:
+          - preview
+          - production
 
 env:
   CARGO_TERM_COLOR: always
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   setup:
     runs-on: ubuntu-latest
-    outputs:
-      packages: '[
-            { "name": "esp-hal",  "tag": "${{ github.event.inputs.esp-hal }}" },
-            { "name": "esp-wifi", "tag": "esp-wifi-${{ github.event.inputs.esp-wifi }}" }
-          ]'
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'release-pr')) }}
     steps:
-      - run: echo "Setup complete!"
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      # Build the `xtask` package using the latest commit, and copy the
+      # resulting binary to the `~/.cargo/bin/` directory. We do this to
+      # avoid having to rebuild different versions of the package for
+      # different tags if they do not fall on the same commit, and to
+      # make sure that we take advantage of any subsequent updates to
+      # the xtask which may have happened after a release was tagged.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          repository: esp-rs/esp-hal
+      - name: Build xtask
+        run: |
+          cargo build --package=xtask --features=deploy-docs
+          cp target/debug/xtask ~/.cargo/bin/hal-xtask
+
+      - name: Cache xtask for all jobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: xtask
+          path: target/debug/xtask
+
+      - id: setup_manual
+        name: Set up [manual run with specific packages]
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.packages != '' }}
+        run: |
+          input='${{ github.event.inputs.packages }}'
+          echo "packages=${input}" >> "$GITHUB_OUTPUT"
+
+      - id: setup_pr
+        name: Set up [pull request or all packages]
+        if: ${{ github.event_name == 'pull_request' || github.event.inputs.packages == '' }}
+        # Release PRs will ignore the tag values and just check out the latest commit
+        run: |
+          output=$(hal-xtask release tag-releases)
+          echo "packages=${output}" >> "$GITHUB_OUTPUT"
+
+    outputs:
+      packages: "${{ steps.setup_manual.outputs.packages || steps.setup_pr.outputs.packages }}"
+
   build:
     needs: setup
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'release-pr')) }}
     strategy:
       fail-fast: true
       matrix:
@@ -32,20 +83,40 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: esp-rs/xtensa-toolchain@v1.5
+      - uses: esp-rs/xtensa-toolchain@v1.6
         with:
           default: true
-          ldproxy: false
-          version: 1.84.0.0
+          version: 1.88.0.0
 
+      # xtensa-toolchain installs rustup and a basic toolchain, but doesn't install rust-src
+      - name: rust-src
+        run: rustup component add rust-src --toolchain nightly
+
+      # Checkout the tag we need to start building the docs
       - name: Checkout repository
         uses: actions/checkout@v4
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         with:
           repository: esp-rs/esp-hal
           ref: ${{ matrix.packages.tag }}
 
+      # If running a release PR, we want to build docs for the latest commit on the released branch.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        if: ${{ github.event_name != 'workflow_dispatch' }}
+        with:
+          repository: esp-rs/esp-hal
+
+      - name: Download xtask
+        uses: actions/download-artifact@v4
+        with:
+          name: xtask
+          path: ~/.cargo/bin/
+
       - name: Build documentation
-        run: cargo xtask build-documentation --packages=${{ matrix.packages.name }}
+        run: |
+          chmod +x ~/.cargo/bin/xtask
+          ~/.cargo/bin/xtask build documentation --packages=${{ matrix.packages.name }} --base-url ${{ fromJSON('["https://preview-docs.espressif.com/projects/rust/", "https://docs.espressif.com/projects/rust/"]')[github.event.inputs.server == 'production'] }}
 
       # https://github.com/actions/deploy-pages/issues/303#issuecomment-1951207879
       - name: Remove problematic '.lock' files
@@ -60,43 +131,61 @@ jobs:
   assemble:
     needs: [setup, build]
     runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'release-pr')) }}
+
     steps:
+      # Check out the sources, the xtask reads package versions from the Cargo.toml files
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: stable
-      - name: Prepare
-        run: mkdir docs
-      - name: Download all docs
+
+      - name: Download all docs and xtask
         uses: actions/download-artifact@v4
         with:
           path: "docs/"
 
+      # Create an index for _all_ packages. Per-package workflows don't upload the landing page.
       - name: Create index.html
-        run: "cargo xtask build-documentation-index --packages=$(echo '${{ needs.setup.outputs.packages }}' | jq -r '[.[].name] | join(\",\")')"
+        run: |
+          chmod +x docs/xtask/xtask
+          docs/xtask/xtask build documentation-index
+          rm -rf docs/xtask
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+      - if: ${{ github.event.inputs.server == 'preview' || github.event_name == 'pull_request' }}
+        name: Deploy to preview server
+        uses: appleboy/scp-action@v0.1.7
         with:
-          path: "docs/"
+          host: preview-docs.espressif.com
+          username: ${{ secrets.PREVIEW_USERNAME }}
+          key: ${{ secrets.PREVIEW_KEY }}
+          target: ${{ secrets.PREVIEW_TARGET }}
+          source: "docs/"
+          strip_components: 1 # remove the docs prefix
+          overwrite: true
 
-  deploy:
-    # Add a dependency to the assemble job:
-    needs: assemble
-
-    # Grant GITHUB_TOKEN the permissions required to make a Pages deployment:
-    permissions:
-      pages: write # to deploy to Pages
-      id-token: write # to verify the deployment originates from an appropriate source
-
-    # Deploy to the github-pages environment:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
-    # Specify runner + deployment step:
+      # Deploying to production server is only allowed for manual runs
+      - if: ${{ github.event.inputs.server == 'production' && github.event_name == 'workflow_dispatch' }}
+        name: Deploy to production server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: docs.espressif.com
+          username: ${{ secrets.PRODUCTION_USERNAME }}
+          key: ${{ secrets.PRODUCTION_KEY }}
+          target: ${{ secrets.PRODUCTION_TARGET }}
+          source: "docs/"
+          strip_components: 1 # remove the docs prefix
+          overwrite: true
+  docsrs:
     runs-on: ubuntu-latest
+    if: ${{ (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'release-pr')) }}
     steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly
+          targets: riscv32imac-unknown-none-elf
+      - uses: actions/checkout@v4
+        with:
+          repository: esp-rs/esp-hal
+
+      - name: Install cargo-docs-rs
+        run: cargo install cargo-docs-rs --locked
+      - name: Run cargo-docs-rs
+        run: cd esp-hal && cargo docs-rs

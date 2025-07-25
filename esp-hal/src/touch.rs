@@ -1,3 +1,4 @@
+#![cfg_attr(docsrs, procmacros::doc_replace)]
 //! # Capacitive Touch Sensor
 //!
 //! ## Overview
@@ -8,16 +9,16 @@
 //! ## Examples
 //!
 //! ```rust, no_run
-#![doc = crate::before_snippet!()]
+//! # {before_snippet}
 //! # use esp_hal::touch::{Touch, TouchPad};
 //! let touch_pin0 = peripherals.GPIO2;
 //! let touch = Touch::continuous_mode(peripherals.TOUCH, None);
 //! let mut touchpad = TouchPad::new(touch_pin0, &touch);
 //! // ... give the peripheral some time for the measurement
 //! let touch_val = touchpad.read();
-//! # }
+//! # {after_snippet}
 //! ```
-//! 
+//!
 //! ## Implementation State:
 //!
 //! Mostly feature complete, missing:
@@ -28,15 +29,13 @@
 use core::marker::PhantomData;
 
 use crate::{
-    gpio::TouchPin,
-    interrupt::InterruptConfigurable,
-    peripheral::{Peripheral, PeripheralRef},
-    peripherals::{LPWR, SENS, TOUCH},
-    private::{Internal, Sealed},
-    rtc_cntl::Rtc,
     Async,
     Blocking,
     DriverMode,
+    gpio::TouchPin,
+    peripherals::{LPWR, SENS, TOUCH},
+    private::{Internal, Sealed},
+    rtc_cntl::Rtc,
 };
 
 /// A marker trait describing the mode the touch pad is set to.
@@ -86,7 +85,7 @@ pub struct TouchConfig {
 
 /// This struct marks a successfully initialized touch peripheral
 pub struct Touch<'d, Tm: TouchMode, Dm: DriverMode> {
-    _inner: PeripheralRef<'d, TOUCH>,
+    _inner: TOUCH<'d>,
     _touch_mode: PhantomData<Tm>,
     _mode: PhantomData<Dm>,
 }
@@ -180,26 +179,23 @@ impl<Tm: TouchMode, Dm: DriverMode> Touch<'_, Tm, Dm> {
 }
 // Async mode and OneShot does not seem to be a sensible combination....
 impl<'d> Touch<'d, OneShot, Blocking> {
+    #[procmacros::doc_replace]
     /// Initializes the touch peripheral and returns this marker struct.
     /// Optionally accepts configuration options.
     ///
     /// ## Example
     ///
     /// ```rust, no_run
-    #[doc = crate::before_snippet!()]
+    /// # {before_snippet}
     /// # use esp_hal::touch::{Touch, TouchConfig};
     /// let touch_cfg = Some(TouchConfig {
     ///     measurement_duration: Some(0x2000),
     ///     ..Default::default()
     /// });
     /// let touch = Touch::one_shot_mode(peripherals.TOUCH, touch_cfg);
-    /// # }
+    /// # {after_snippet}
     /// ```
-    pub fn one_shot_mode(
-        touch_peripheral: impl Peripheral<P = TOUCH> + 'd,
-        config: Option<TouchConfig>,
-    ) -> Self {
-        crate::into_ref!(touch_peripheral);
+    pub fn one_shot_mode(touch_peripheral: TOUCH<'d>, config: Option<TouchConfig>) -> Self {
         let rtccntl = LPWR::regs();
         let sens = SENS::regs();
 
@@ -240,27 +236,23 @@ impl<'d> Touch<'d, OneShot, Blocking> {
     }
 }
 impl<'d> Touch<'d, Continuous, Blocking> {
+    #[procmacros::doc_replace]
     /// Initializes the touch peripheral in continuous mode and returns this
     /// marker struct. Optionally accepts configuration options.
     ///
     /// ## Example
     ///
     /// ```rust, no_run
-    #[doc = crate::before_snippet!()]
+    /// # {before_snippet}
     /// # use esp_hal::touch::{Touch, TouchConfig};
     /// let touch_cfg = Some(TouchConfig {
     ///     measurement_duration: Some(0x3000),
     ///     ..Default::default()
     /// });
     /// let touch = Touch::continuous_mode(peripherals.TOUCH, touch_cfg);
-    /// # }
+    /// # {after_snippet}
     /// ```
-    pub fn continuous_mode(
-        touch_peripheral: impl Peripheral<P = TOUCH> + 'd,
-        config: Option<TouchConfig>,
-    ) -> Self {
-        crate::into_ref!(touch_peripheral);
-
+    pub fn continuous_mode(touch_peripheral: TOUCH<'d>, config: Option<TouchConfig>) -> Self {
         Self::initialize_common_continuous(config);
 
         Self {
@@ -271,6 +263,7 @@ impl<'d> Touch<'d, Continuous, Blocking> {
     }
 }
 impl<'d> Touch<'d, Continuous, Async> {
+    #[procmacros::doc_replace]
     /// Initializes the touch peripheral in continuous async mode and returns
     /// this marker struct.
     ///
@@ -284,27 +277,24 @@ impl<'d> Touch<'d, Continuous, Async> {
     ///
     /// ## Parameters:
     ///
-    /// - `rtc`: The RTC peripheral is needed to configure the required
-    ///   interrupts.
+    /// - `rtc`: The RTC peripheral is needed to configure the required interrupts.
     /// - `config`: Optional configuration options.
     ///
     /// ## Example
     ///
     /// ```rust, no_run
-    #[doc = crate::before_snippet!()]
+    /// # {before_snippet}
     /// # use esp_hal::rtc_cntl::Rtc;
     /// # use esp_hal::touch::{Touch, TouchConfig};
     /// let mut rtc = Rtc::new(peripherals.LPWR);
     /// let touch = Touch::async_mode(peripherals.TOUCH, &mut rtc, None);
-    /// # }
+    /// # {after_snippet}
     /// ```
     pub fn async_mode(
-        touch_peripheral: impl Peripheral<P = TOUCH> + 'd,
+        touch_peripheral: TOUCH<'d>,
         rtc: &mut Rtc<'_>,
         config: Option<TouchConfig>,
     ) -> Self {
-        crate::into_ref!(touch_peripheral);
-
         Self::initialize_common_continuous(config);
 
         rtc.set_interrupt_handler(asynch::handle_touch_interrupt);
@@ -423,9 +413,8 @@ impl<P: TouchPin, Tm: TouchMode> TouchPad<P, Tm, Blocking> {
     /// [1]: ../rtc_cntl/struct.Rtc.html#method.set_interrupt_handler
     ///
     /// ## Parameters:
-    /// - `threshold`: The threshold above/below which the pin is considered
-    ///   touched. Above/below depends on the configuration of `touch` in
-    ///   [`new`](Self::new) (defaults to below).
+    /// - `threshold`: The threshold above/below which the pin is considered touched. Above/below
+    ///   depends on the configuration of `touch` in [`new`](Self::new) (defaults to below).
     ///
     /// ## Example
     pub fn enable_interrupt(&mut self, threshold: u16) {
@@ -465,7 +454,7 @@ fn internal_enable_interrupt(touch_nr: u8) {
 
     SENS::regs().sar_touch_enable().modify(|r, w| unsafe {
         w.touch_pad_outen1()
-            .bits(r.touch_pad_outen1().bits() | 1 << touch_nr)
+            .bits(r.touch_pad_outen1().bits() | (1 << touch_nr))
     });
 }
 
@@ -526,7 +515,7 @@ mod asynch {
     };
 
     use super::*;
-    use crate::{asynch::AtomicWaker, handler, ram, Async};
+    use crate::{Async, asynch::AtomicWaker, handler, ram};
 
     const NUM_TOUCH_PINS: usize = 10;
 

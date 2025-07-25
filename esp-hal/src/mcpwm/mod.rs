@@ -1,3 +1,15 @@
+#![cfg_attr(docsrs, procmacros::doc_replace(
+    "clock_cfg" => {
+        cfg(not(esp32h2)) => "let clock_cfg = PeripheralClockConfig::with_frequency(Rate::from_mhz(40))?;",
+        cfg(esp32h2) => "let clock_cfg = PeripheralClockConfig::with_frequency(Rate::from_mhz(32))?;"
+    },
+    "clock_src" => {
+        cfg(esp32) => "Clock source is PWM_CLOCK",
+        cfg(esp32s3) => "Clock source is CRYPTO_PWM_CLOCK",
+        cfg(esp32c6) => "Clock source is CRYPTO_CLOCK",
+        cfg(esp32h2) => "Clock source is XTAL",
+    }
+))]
 //! # Motor Control Pulse Width Modulator (MCPWM)
 //!
 //! ## Overview
@@ -9,38 +21,33 @@
 //! - Digital motor control, e.g., brushed/brushless DC motor, RC servo motor
 //! - Switch mode-based digital power conversion
 //! - Power DAC, where the duty cycle is equivalent to a DAC analog value
-//! - Calculate external pulse width, and convert it into other analog values
-//!   like speed, distance
+//! - Calculate external pulse width, and convert it into other analog values like speed, distance
 //! - Generate Space Vector PWM (SVPWM) signals for Field Oriented Control (FOC)
 //!
 //! ## Configuration
 //!
 //! * PWM Timers 0, 1 and 2
 //!     * Every PWM timer has a dedicated 8-bit clock prescaler.
-//!     * The 16-bit counter in the PWM timer can work in count-up mode,
-//!       count-down mode or count-up-down mode.
-//!     * A hardware sync or software sync can trigger a reload on the PWM timer
-//!       with a phase register (Not yet implemented)
+//!     * The 16-bit counter in the PWM timer can work in count-up mode, count-down mode or
+//!       count-up-down mode.
+//!     * A hardware sync or software sync can trigger a reload on the PWM timer with a phase
+//!       register (Not yet implemented)
 //! * PWM Operators 0, 1 and 2
-//!     * Every PWM operator has two PWM outputs: PWMxA and PWMxB. They can work
-//!       independently, in symmetric and asymmetric configuration.
+//!     * Every PWM operator has two PWM outputs: PWMxA and PWMxB. They can work independently, in
+//!       symmetric and asymmetric configuration.
 //!     * Software, asynchronously override control of PWM signals.
-//!     * Configurable dead-time on rising and falling edges; each set up
-//!       independently. (Not yet implemented)
-//!     * All events can trigger CPU interrupts. (Not yet implemented)
-//!     * Modulating of PWM output by high-frequency carrier signals, useful
-//!       when gate drivers are insulated with a transformer. (Not yet
+//!     * Configurable dead-time on rising and falling edges; each set up independently. (Not yet
 //!       implemented)
-//!     * Period, time stamps and important control registers have shadow
-//!       registers with flexible updating methods.
+//!     * All events can trigger CPU interrupts. (Not yet implemented)
+//!     * Modulating of PWM output by high-frequency carrier signals, useful when gate drivers are
+//!       insulated with a transformer. (Not yet implemented)
+//!     * Period, time stamps and important control registers have shadow registers with flexible
+//!       updating methods.
 //! * Fault Detection Module (Not yet implemented)
 //! * Capture Module (Not yet implemented)
-#![doc = ""]
-#![cfg_attr(esp32, doc = "Clock source is PWM_CLOCK")]
-#![cfg_attr(esp32s3, doc = "Clock source is CRYPTO_PWM_CLOCK")]
-#![cfg_attr(esp32c6, doc = "Clock source is CRYPTO_CLOCK")]
-#![cfg_attr(esp32h2, doc = "Clock source is XTAL")]
-#![doc = ""]
+//!
+//! # {clock_src}
+//!
 //! ## Examples
 //!
 //! ### Output a 20 kHz signal
@@ -50,19 +57,12 @@
 //! `pin`.
 //!
 //! ```rust, no_run
-#![doc = crate::before_snippet!()]
+//! # {before_snippet}
 //! # use esp_hal::mcpwm::{operator::{DeadTimeCfg, PWMStream, PwmPinConfig}, timer::PwmWorkingMode, McPwm, PeripheralClockConfig};
 //! # let pin = peripherals.GPIO0;
 //!
 //! // initialize peripheral
-#![cfg_attr(
-    esp32h2,
-    doc = "let clock_cfg = PeripheralClockConfig::with_frequency(40.MHz()).unwrap();"
-)]
-#![cfg_attr(
-    not(esp32h2),
-    doc = "let clock_cfg = PeripheralClockConfig::with_frequency(32.MHz()).unwrap();"
-)]
+//! # {clock_cfg}
 //! let mut mcpwm = McPwm::new(peripherals.MCPWM0, clock_cfg);
 //!
 //! // connect operator0 to timer0
@@ -75,16 +75,14 @@
 //! // start timer with timestamp values in the range of 0..=99 and a frequency
 //! // of 20 kHz
 //! let timer_clock_cfg = clock_cfg
-//!     .timer_clock_with_frequency(99, PwmWorkingMode::Increase, 20.kHz())
-//!     .unwrap();
-//! mcpwm.timer0.start(timer_clock_cfg);
+//!     .timer_clock_with_frequency(99, PwmWorkingMode::Increase,
+//! Rate::from_khz(20))?; mcpwm.timer0.start(timer_clock_cfg);
 //!
 //! // pin will be high 50% of the time
 //! pwm_pin.set_timestamp(50);
-//! # }
+//! # {after_snippet}
 //! ```
 
-use fugit::HertzU32;
 use operator::Operator;
 use timer::Timer;
 
@@ -92,8 +90,8 @@ use crate::{
     clock::Clocks,
     gpio::OutputSignal,
     pac,
-    peripheral::{Peripheral, PeripheralRef},
     system::{self, PeripheralGuard},
+    time::Rate,
 };
 
 /// MCPWM operators
@@ -106,7 +104,7 @@ type RegisterBlock = pac::mcpwm0::RegisterBlock;
 /// The MCPWM peripheral
 #[non_exhaustive]
 pub struct McPwm<'d, PWM> {
-    _inner: PeripheralRef<'d, PWM>,
+    _inner: PWM,
     /// Timer0
     pub timer0: Timer<0, PWM>,
     /// Timer1
@@ -122,15 +120,10 @@ pub struct McPwm<'d, PWM> {
     _guard: PeripheralGuard,
 }
 
-impl<'d, PWM: PwmPeripheral> McPwm<'d, PWM> {
+impl<'d, PWM: PwmPeripheral + 'd> McPwm<'d, PWM> {
     /// `pwm_clk = clocks.crypto_pwm_clock / (prescaler + 1)`
     // clocks.crypto_pwm_clock normally is 160 MHz
-    pub fn new(
-        peripheral: impl Peripheral<P = PWM> + 'd,
-        peripheral_clock: PeripheralClockConfig,
-    ) -> Self {
-        crate::into_ref!(peripheral);
-
+    pub fn new(peripheral: PWM, peripheral_clock: PeripheralClockConfig) -> Self {
         let guard = PeripheralGuard::new(PWM::peripheral());
 
         #[cfg(not(esp32c6))]
@@ -190,7 +183,7 @@ impl<'d, PWM: PwmPeripheral> McPwm<'d, PWM> {
 /// Clock configuration of the MCPWM peripheral
 #[derive(Copy, Clone)]
 pub struct PeripheralClockConfig {
-    frequency: HertzU32,
+    frequency: Rate,
     prescaler: u8,
 }
 
@@ -236,7 +229,7 @@ impl PeripheralClockConfig {
     /// Only divisors of the input clock (`160 Mhz / 1`, `160 Mhz / 2`, ...,
     /// `160 Mhz / 256`) are representable exactly. Other target frequencies
     /// will be rounded up to the next divisor.
-    pub fn with_frequency(target_freq: HertzU32) -> Result<Self, FrequencyError> {
+    pub fn with_frequency(target_freq: Rate) -> Result<Self, FrequencyError> {
         let clocks = Clocks::get();
         cfg_if::cfg_if! {
             if #[cfg(esp32)] {
@@ -250,7 +243,7 @@ impl PeripheralClockConfig {
             }
         }
 
-        if target_freq.raw() == 0 || target_freq > source_clock {
+        if target_freq.as_hz() == 0 || target_freq > source_clock {
             return Err(FrequencyError);
         }
 
@@ -266,7 +259,7 @@ impl PeripheralClockConfig {
     ///
     /// ### Note:
     /// The actual value is rounded down to the nearest `u32` value
-    pub fn frequency(&self) -> HertzU32 {
+    pub fn frequency(&self) -> Rate {
         self.frequency
     }
 
@@ -301,7 +294,7 @@ impl PeripheralClockConfig {
         &self,
         period: u16,
         mode: timer::PwmWorkingMode,
-        target_freq: HertzU32,
+        target_freq: Rate,
     ) -> Result<timer::TimerClockConfig, FrequencyError> {
         timer::TimerClockConfig::with_frequency(self, period, mode, target_freq)
     }
@@ -323,8 +316,8 @@ pub trait PwmPeripheral: crate::private::Sealed {
     fn peripheral() -> system::Peripheral;
 }
 
-#[cfg(mcpwm0)]
-impl PwmPeripheral for crate::peripherals::MCPWM0 {
+#[cfg(soc_has_mcpwm0)]
+impl PwmPeripheral for crate::peripherals::MCPWM0<'_> {
     fn block() -> *const RegisterBlock {
         Self::regs()
     }
@@ -346,8 +339,8 @@ impl PwmPeripheral for crate::peripherals::MCPWM0 {
     }
 }
 
-#[cfg(mcpwm1)]
-impl PwmPeripheral for crate::peripherals::MCPWM1 {
+#[cfg(soc_has_mcpwm1)]
+impl PwmPeripheral for crate::peripherals::MCPWM1<'_> {
     fn block() -> *const RegisterBlock {
         Self::regs()
     }

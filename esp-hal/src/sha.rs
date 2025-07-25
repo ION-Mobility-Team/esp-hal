@@ -1,3 +1,4 @@
+#![cfg_attr(docsrs, procmacros::doc_replace)]
 //! # Secure Hash Algorithm (SHA) Accelerator
 //!
 //! ## Overview
@@ -30,7 +31,7 @@
 //!
 //! ## Examples
 //! ```rust, no_run
-#![doc = crate::before_snippet!()]
+//! # {before_snippet}
 //! # use esp_hal::sha::Sha;
 //! # use esp_hal::sha::Sha256;
 //! # use nb::block;
@@ -44,14 +45,14 @@
 //! while !source_data.is_empty() {
 //!     // All the HW Sha functions are infallible so unwrap is fine to use if
 //!     // you use block!
-//!     source_data = block!(hasher.update(source_data)).unwrap();
+//!     source_data = block!(hasher.update(source_data))?;
 //! }
 //!
 //! // Finish can be called as many times as desired to get multiple copies of
 //! // the output.
-//! block!(hasher.finish(output.as_mut_slice())).unwrap();
+//! block!(hasher.finish(output.as_mut_slice()))?;
 //!
-//! # }
+//! # {after_snippet}
 //! ```
 //! ## Implementation State
 //! - DMA-SHA Mode is not supported.
@@ -59,13 +60,11 @@
 use core::{borrow::Borrow, convert::Infallible, marker::PhantomData, mem::size_of};
 
 /// Re-export digest for convenience
-#[cfg(feature = "digest")]
 pub use digest::Digest;
 
 #[cfg(not(esp32))]
 use crate::peripherals::Interrupt;
 use crate::{
-    peripheral::{Peripheral, PeripheralRef},
     peripherals::SHA,
     reg_access::{AlignmentHelper, SocDependentEndianess},
     system::GenericPeripheralGuard,
@@ -73,14 +72,13 @@ use crate::{
 
 /// The SHA Accelerator driver instance
 pub struct Sha<'d> {
-    sha: PeripheralRef<'d, SHA>,
+    sha: SHA<'d>,
     _guard: GenericPeripheralGuard<{ crate::system::Peripheral::Sha as u8 }>,
 }
 
 impl<'d> Sha<'d> {
     /// Create a new instance of the SHA Accelerator driver.
-    pub fn new(sha: impl Peripheral<P = SHA> + 'd) -> Self {
-        crate::into_ref!(sha);
+    pub fn new(sha: SHA<'d>) -> Self {
         let guard = GenericPeripheralGuard::new();
 
         Self { sha, _guard: guard }
@@ -107,9 +105,10 @@ impl<'d> Sha<'d> {
 impl crate::private::Sealed for Sha<'_> {}
 
 #[cfg(not(esp32))]
+#[instability::unstable]
 impl crate::interrupt::InterruptConfigurable for Sha<'_> {
     fn set_interrupt_handler(&mut self, handler: crate::interrupt::InterruptHandler) {
-        for core in crate::Cpu::other() {
+        for core in crate::system::Cpu::other() {
             crate::interrupt::disable(core, Interrupt::SHA);
         }
         unsafe { crate::interrupt::bind_interrupt(Interrupt::SHA, handler.handler()) };
@@ -118,18 +117,12 @@ impl crate::interrupt::InterruptConfigurable for Sha<'_> {
 }
 
 // A few notes on this implementation with regards to 'memcpy',
-// - It seems that ptr::write_bytes already acts as volatile, while ptr::copy_*
-//   does not (in this case)
-// - The registers are *not* cleared after processing, so padding needs to be
-//   written out
-// - This component uses core::intrinsics::volatile_* which is unstable, but is
-//   the only way to
+// - The registers are *not* cleared after processing, so padding needs to be written out
+// - This component uses core::intrinsics::volatile_* which is unstable, but is the only way to
 // efficiently copy memory with volatile
-// - For this particular registers (and probably others), a full u32 needs to be
-//   written partial
+// - For this particular registers (and probably others), a full u32 needs to be written partial
 // register writes (i.e. in u8 mode) does not work
-//   - This means that we need to buffer bytes coming in up to 4 u8's in order
-//     to create a full u32
+//   - This means that we need to buffer bytes coming in up to 4 u8's in order to create a full u32
 
 /// An active digest
 ///
@@ -242,19 +235,19 @@ impl<'d, A: ShaAlgorithm, S: Borrow<Sha<'d>>> ShaDigest<'d, A, S> {
             );
             self.cursor = self.cursor.wrapping_add(flushed);
 
-            if flushed > 0 && self.cursor % A::CHUNK_LENGTH == 0 {
+            if flushed > 0 && self.cursor.is_multiple_of(A::CHUNK_LENGTH) {
                 self.process_buffer();
                 while self.is_busy() {}
             }
         }
-        debug_assert!(self.cursor % 4 == 0);
+        debug_assert!(self.cursor.is_multiple_of(4));
 
         let mod_cursor = self.cursor % A::CHUNK_LENGTH;
         if (A::CHUNK_LENGTH - mod_cursor) < A::CHUNK_LENGTH / 8 {
             // Zero out remaining data if buffer is almost full (>=448/896), and process
             // buffer
             let pad_len = A::CHUNK_LENGTH - mod_cursor;
-            self.alignment_helper.volatile_write_bytes(
+            self.alignment_helper.volatile_write(
                 m_mem(&self.sha.borrow().sha, 0),
                 0_u8,
                 pad_len / self.alignment_helper.align_size(),
@@ -272,7 +265,7 @@ impl<'d, A: ShaAlgorithm, S: Borrow<Sha<'d>>> ShaDigest<'d, A, S> {
         let mod_cursor = self.cursor % A::CHUNK_LENGTH; // Should be zero if branched above
         let pad_len = A::CHUNK_LENGTH - mod_cursor - size_of::<u64>();
 
-        self.alignment_helper.volatile_write_bytes(
+        self.alignment_helper.volatile_write(
             m_mem(&self.sha.borrow().sha, 0),
             0,
             pad_len / self.alignment_helper.align_size(),
@@ -492,7 +485,6 @@ pub trait ShaAlgorithm: crate::private::Sealed {
     /// For example, in SHA-256, this would be 32 bytes.
     const DIGEST_LENGTH: usize;
 
-    #[cfg(feature = "digest")]
     #[doc(hidden)]
     type DigestOutputSize: digest::generic_array::ArrayLength<u8> + 'static;
 
@@ -503,46 +495,41 @@ pub trait ShaAlgorithm: crate::private::Sealed {
     #[cfg(esp32)]
     #[doc(hidden)]
     // Initiate the operation
-    fn start(sha: &crate::peripherals::SHA);
+    fn start(sha: &crate::peripherals::SHA<'_>);
 
     #[cfg(esp32)]
     #[doc(hidden)]
     // Continue the operation
-    fn r#continue(sha: &crate::peripherals::SHA);
+    fn r#continue(sha: &crate::peripherals::SHA<'_>);
 
     #[cfg(esp32)]
     #[doc(hidden)]
     // Calculate the final hash
-    fn load(sha: &crate::peripherals::SHA);
+    fn load(sha: &crate::peripherals::SHA<'_>);
 
     #[cfg(esp32)]
     #[doc(hidden)]
     // Check if peripheral is busy
-    fn is_busy(sha: &crate::peripherals::SHA) -> bool;
+    fn is_busy(sha: &crate::peripherals::SHA<'_>) -> bool;
 }
 
 /// implement digest traits if digest feature is present.
 /// Note: digest has a blanket trait implementation for [digest::Digest] for any
 /// element that implements FixedOutput + Default + Update + HashMarker
-#[cfg(feature = "digest")]
 impl<'d, A: ShaAlgorithm, S: Borrow<Sha<'d>>> digest::HashMarker for ShaDigest<'d, A, S> {}
 
-#[cfg(feature = "digest")]
 impl<'d, A: ShaAlgorithm, S: Borrow<Sha<'d>>> digest::OutputSizeUser for ShaDigest<'d, A, S> {
     type OutputSize = A::DigestOutputSize;
 }
 
-#[cfg(feature = "digest")]
 impl<'d, A: ShaAlgorithm, S: Borrow<Sha<'d>>> digest::Update for ShaDigest<'d, A, S> {
-    fn update(&mut self, data: &[u8]) {
-        let mut remaining = data.as_ref();
+    fn update(&mut self, mut remaining: &[u8]) {
         while !remaining.is_empty() {
             remaining = nb::block!(Self::update(self, remaining)).unwrap();
         }
     }
 }
 
-#[cfg(feature = "digest")]
 impl<'d, A: ShaAlgorithm, S: Borrow<Sha<'d>>> digest::FixedOutput for ShaDigest<'d, A, S> {
     fn finalize_into(mut self, out: &mut digest::Output<Self>) {
         nb::block!(self.finish(out)).unwrap();
@@ -577,34 +564,33 @@ macro_rules! impl_sha {
             #[cfg(not(esp32))]
             const MODE_AS_BITS: u8 = $mode_bits;
 
-            #[cfg(feature = "digest")]
             // We use paste to append `U` to the digest size to match a const defined in
             // digest
             type DigestOutputSize = paste::paste!(digest::consts::[< U $digest_length >]);
 
             #[cfg(esp32)]
-            fn start(sha: &crate::peripherals::SHA) {
+            fn start(sha: &crate::peripherals::SHA<'_>) {
                 paste::paste! {
                     sha.register_block().[< $name:lower _start >]().write(|w| w.[< $name:lower _start >]().set_bit());
                 }
             }
 
             #[cfg(esp32)]
-            fn r#continue(sha: &crate::peripherals::SHA) {
+            fn r#continue(sha: &crate::peripherals::SHA<'_>) {
                 paste::paste! {
                     sha.register_block().[< $name:lower _continue >]().write(|w| w.[< $name:lower _continue >]().set_bit());
                 }
             }
 
             #[cfg(esp32)]
-            fn load(sha: &crate::peripherals::SHA) {
+            fn load(sha: &crate::peripherals::SHA<'_>) {
                 paste::paste! {
                     sha.register_block().[< $name:lower _load >]().write(|w| w.[< $name:lower _load >]().set_bit());
                 }
             }
 
             #[cfg(esp32)]
-            fn is_busy(sha: &crate::peripherals::SHA) -> bool {
+            fn is_busy(sha: &crate::peripherals::SHA<'_>) -> bool {
                 paste::paste! {
                     sha.register_block().[< $name:lower _busy >]().read().[< $name:lower _busy >]().bit_is_set()
                 }
@@ -625,22 +611,23 @@ macro_rules! impl_sha {
 // Two working modes
 // – Typical SHA
 // – DMA-SHA (not implemented yet)
-//
-// TODO: Allow/Implement SHA512_(u16)
+#[cfg(sha_algo_sha_1)]
 impl_sha!(Sha1, 0, 20, 64);
-#[cfg(not(esp32))]
+#[cfg(sha_algo_sha_224)]
 impl_sha!(Sha224, 1, 28, 64);
+#[cfg(sha_algo_sha_256)]
 impl_sha!(Sha256, 2, 32, 64);
-#[cfg(any(esp32, esp32s2, esp32s3))]
+#[cfg(sha_algo_sha_384)]
 impl_sha!(Sha384, 3, 48, 128);
-#[cfg(any(esp32, esp32s2, esp32s3))]
+#[cfg(sha_algo_sha_512)]
 impl_sha!(Sha512, 4, 64, 128);
-#[cfg(any(esp32s2, esp32s3))]
+#[cfg(sha_algo_sha_512_224)]
 impl_sha!(Sha512_224, 5, 28, 128);
-#[cfg(any(esp32s2, esp32s3))]
+#[cfg(sha_algo_sha_512_256)]
 impl_sha!(Sha512_256, 6, 32, 128);
+// TODO: Allow/Implement SHA512_(u16)
 
-fn h_mem(sha: &crate::peripherals::SHA, index: usize) -> *mut u32 {
+fn h_mem(sha: &crate::peripherals::SHA<'_>, index: usize) -> *mut u32 {
     let sha = sha.register_block();
     cfg_if::cfg_if! {
         if #[cfg(esp32)] {
@@ -651,7 +638,7 @@ fn h_mem(sha: &crate::peripherals::SHA, index: usize) -> *mut u32 {
     }
 }
 
-fn m_mem(sha: &crate::peripherals::SHA, index: usize) -> *mut u32 {
+fn m_mem(sha: &crate::peripherals::SHA<'_>, index: usize) -> *mut u32 {
     let sha = sha.register_block();
     cfg_if::cfg_if! {
         if #[cfg(esp32)] {

@@ -20,14 +20,15 @@ use esp_backtrace as _;
 use esp_hal::{
     delay::Delay,
     main,
-    peripheral::Peripheral,
     spi::{
-        master::{Config, Spi},
         Mode,
+        master::{Config, Spi},
     },
-    time::RateExtU32,
+    time::Rate,
 };
 use esp_println::println;
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 #[main]
 fn main() -> ! {
@@ -42,7 +43,7 @@ fn main() -> ! {
     let mut spi = Spi::new(
         peripherals.SPI2,
         Config::default()
-            .with_frequency(100.kHz())
+            .with_frequency(Rate::from_khz(100))
             .with_mode(Mode::_0),
     )
     .unwrap()

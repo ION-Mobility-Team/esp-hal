@@ -7,15 +7,18 @@ use core::{
     ptr::{self, addr_of, addr_of_mut},
 };
 
-use esp_wifi_sys::include::malloc;
+use allocator_api2::{boxed::Box, vec::Vec};
+use esp_hal::time::{Duration, Instant};
+use esp_wifi_sys::{c_types::c_char, include::malloc};
 
 use super::malloc::free;
 use crate::{
+    CONFIG,
     binary::c_types::{c_int, c_void},
+    compat::malloc::InternalMemory,
     hal::sync::Locked,
     memory_fence::memory_fence,
-    preempt::current_task,
-    timer::yield_task,
+    preempt::{current_task, yield_task},
 };
 
 pub(crate) const OSI_FUNCS_TIME_BLOCKING: u32 = u32::MAX;
@@ -38,10 +41,6 @@ impl ConcurrentQueue {
         }
     }
 
-    fn release_storage(&mut self) {
-        self.raw_queue.with(|q| unsafe { q.release_storage() })
-    }
-
     pub(crate) fn enqueue(&mut self, item: *mut c_void) -> i32 {
         self.raw_queue.with(|q| unsafe { q.enqueue(item) })
     }
@@ -59,55 +58,59 @@ impl ConcurrentQueue {
     }
 }
 
-impl Drop for ConcurrentQueue {
-    fn drop(&mut self) {
-        self.release_storage();
-    }
-}
-
 /// A naive and pretty much unsafe queue to back the queues used in drivers and
 /// supplicant code.
 ///
 /// The [ConcurrentQueue] wrapper should be used.
 pub struct RawQueue {
-    capacity: usize,
     item_size: usize,
+    capacity: usize,
     current_read: usize,
     current_write: usize,
-    storage: *mut u8,
+    storage: Box<[u8], InternalMemory>,
 }
 
 impl RawQueue {
     /// This allocates underlying storage. See [release_storage]
     pub fn new(capacity: usize, item_size: usize) -> Self {
-        let storage = unsafe { malloc((capacity * item_size) as u32) as *mut u8 };
-        assert!(!storage.is_null());
+        let storage =
+            unsafe { Box::new_zeroed_slice_in(capacity * item_size, InternalMemory).assume_init() };
 
         Self {
-            capacity,
             item_size,
+            capacity,
             current_read: 0,
             current_write: 0,
             storage,
         }
     }
 
-    /// Call `release_storage` to deallocate the underlying storage
-    unsafe fn release_storage(&mut self) {
-        unsafe {
-            free(self.storage);
-        }
-        self.storage = core::ptr::null_mut();
+    fn get(&self, index: usize) -> &[u8] {
+        let item_start = self.item_size * index;
+        &self.storage[item_start..][..self.item_size]
+    }
+
+    fn get_mut(&mut self, index: usize) -> &mut [u8] {
+        let item_start = self.item_size * index;
+        &mut self.storage[item_start..][..self.item_size]
+    }
+
+    fn full(&self) -> bool {
+        self.count() == self.capacity
+    }
+
+    fn empty(&self) -> bool {
+        self.count() == 0
     }
 
     unsafe fn enqueue(&mut self, item: *mut c_void) -> i32 {
-        if self.count() < self.capacity {
-            unsafe {
-                let p = self.storage.byte_add(self.item_size * self.current_write);
-                p.copy_from(item as *mut u8, self.item_size);
-                self.current_write = (self.current_write + 1) % self.capacity;
-            }
+        if !self.full() {
+            let item = unsafe { core::slice::from_raw_parts(item as *const u8, self.item_size) };
 
+            let dst = self.get_mut(self.current_write);
+            dst.copy_from_slice(item);
+
+            self.current_write = (self.current_write + 1) % self.capacity;
             1
         } else {
             0
@@ -115,12 +118,14 @@ impl RawQueue {
     }
 
     unsafe fn try_dequeue(&mut self, item: *mut c_void) -> bool {
-        if self.count() > 0 {
-            unsafe {
-                let p = self.storage.byte_add(self.item_size * self.current_read) as *const c_void;
-                item.copy_from(p, self.item_size);
-                self.current_read = (self.current_read + 1) % self.capacity;
-            }
+        if !self.empty() {
+            let item = unsafe { core::slice::from_raw_parts_mut(item as *mut u8, self.item_size) };
+
+            let src = self.get(self.current_read);
+            item.copy_from_slice(src);
+
+            self.current_read = (self.current_read + 1) % self.capacity;
+
             true
         } else {
             false
@@ -131,32 +136,28 @@ impl RawQueue {
         // do what the ESP-IDF implementations does ...
         // just remove all elements and add them back except the one we need to remove -
         // good enough for now
-        let item_slice = core::slice::from_raw_parts_mut(item as *mut u8, self.item_size);
+        let item_slice = unsafe { core::slice::from_raw_parts(item as *const u8, self.item_size) };
         let count = self.count();
 
         if count == 0 {
             return;
         }
 
-        let tmp_item = crate::compat::malloc::malloc(self.item_size);
-
-        if tmp_item.is_null() {
-            panic!("Out of memory");
-        }
+        let mut tmp_item = Vec::<u8, _>::new_in(InternalMemory);
+        tmp_item.reserve_exact(self.item_size);
+        tmp_item.resize(self.item_size, 0);
 
         for _ in 0..count {
-            if self.try_dequeue(tmp_item as *mut c_void) {
-                let tmp_slice = core::slice::from_raw_parts_mut(tmp_item, self.item_size);
-                if tmp_slice != item_slice {
-                    self.enqueue(tmp_item as *mut c_void);
-                }
+            if !unsafe { self.try_dequeue(tmp_item.as_mut_ptr().cast()) } {
+                break;
+            }
+            if &tmp_item[..] != item_slice {
+                unsafe { self.enqueue(tmp_item.as_mut_ptr().cast()) };
             }
         }
-
-        crate::compat::malloc::free(tmp_item);
     }
 
-    unsafe fn count(&self) -> usize {
+    fn count(&self) -> usize {
         if self.current_write >= self.current_read {
             self.current_write - self.current_read
         } else {
@@ -165,19 +166,23 @@ impl RawQueue {
     }
 }
 
-pub unsafe fn str_from_c<'a>(s: *const u8) -> &'a str {
-    let c_str = core::ffi::CStr::from_ptr(s.cast());
-    core::str::from_utf8_unchecked(c_str.to_bytes())
+pub unsafe fn str_from_c<'a>(s: *const c_char) -> &'a str {
+    unsafe {
+        let c_str = core::ffi::CStr::from_ptr(s.cast());
+        core::str::from_utf8_unchecked(c_str.to_bytes())
+    }
 }
 
-#[no_mangle]
-unsafe extern "C" fn strnlen(chars: *const u8, maxlen: usize) -> usize {
+#[unsafe(no_mangle)]
+unsafe extern "C" fn strnlen(chars: *const c_char, maxlen: usize) -> usize {
     let mut len = 0;
     loop {
-        if chars.offset(len).read_volatile() == 0 {
-            break;
+        unsafe {
+            if chars.offset(len).read_volatile() == 0 {
+                break;
+            }
+            len += 1;
         }
-        len += 1;
     }
 
     len as usize
@@ -202,11 +207,21 @@ pub(crate) fn sem_delete(semphr: *mut c_void) {
 }
 
 pub(crate) fn sem_take(semphr: *mut c_void, tick: u32) -> i32 {
+    // This shouldn't normally happen if we always report the correct state from
+    // `is_in_isr`. This is a last resort if the driver calls this anyways.
+    // (I haven't observed this to happen)
+    let tick = if tick == OSI_FUNCS_TIME_BLOCKING && crate::is_interrupts_disabled() {
+        warn!("blocking sem_take probably called from an ISR - return early");
+        1
+    } else {
+        tick
+    };
+
     trace!(">>>> semphr_take {:?} block_time_tick {}", semphr, tick);
 
     let forever = tick == OSI_FUNCS_TIME_BLOCKING;
     let timeout = tick as u64;
-    let start = crate::timer::systimer_count();
+    let start = crate::time::systimer_count();
 
     let sem = semphr as *mut u32;
 
@@ -227,7 +242,7 @@ pub(crate) fn sem_take(semphr: *mut c_void, tick: u32) -> i32 {
             return 1;
         }
 
-        if !forever && crate::timer::elapsed_time_since(start) > timeout {
+        if !forever && crate::time::elapsed_time_since(start) > timeout {
             break 'outer;
         }
 
@@ -251,7 +266,7 @@ pub(crate) fn sem_give(semphr: *mut c_void) -> i32 {
 
 pub(crate) fn thread_sem_get() -> *mut c_void {
     trace!("wifi_thread_semphr_get");
-    unsafe { &mut ((*current_task()).thread_semaphore) as *mut _ as *mut c_void }
+    crate::preempt::current_task_thread_semaphore()
 }
 
 pub(crate) fn create_recursive_mutex() -> *mut c_void {
@@ -353,9 +368,7 @@ pub(crate) fn send_queued(
 ) -> i32 {
     trace!(
         "queue_send queue {:?} item {:x} block_time_tick {}",
-        queue,
-        item as usize,
-        block_time_tick
+        queue, item as usize, block_time_tick
     );
 
     let queue: *mut ConcurrentQueue = queue.cast();
@@ -369,14 +382,12 @@ pub(crate) fn receive_queued(
 ) -> i32 {
     trace!(
         "queue_recv {:?} item {:?} block_time_tick {}",
-        queue,
-        item,
-        block_time_tick
+        queue, item, block_time_tick
     );
 
     let forever = block_time_tick == OSI_FUNCS_TIME_BLOCKING;
     let timeout = block_time_tick as u64;
-    let start = crate::timer::systimer_count();
+    let start = crate::time::systimer_count();
 
     loop {
         if unsafe { (*queue).try_dequeue(item) } {
@@ -384,7 +395,7 @@ pub(crate) fn receive_queued(
             return 1;
         }
 
-        if !forever && crate::timer::elapsed_time_since(start) > timeout {
+        if !forever && crate::time::elapsed_time_since(start) > timeout {
             trace!("queue_recv returns with timeout");
             return -1;
         }
@@ -402,30 +413,28 @@ pub(crate) fn number_of_messages_in_queue(queue: *const ConcurrentQueue) -> u32 
 
 /// Implementation of sleep() from newlib in esp-idf.
 /// components/newlib/time.c
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub(crate) unsafe extern "C" fn sleep(
-    seconds: crate::binary::c_types::c_uint,
+    millis: crate::binary::c_types::c_uint,
 ) -> crate::binary::c_types::c_uint {
     trace!("sleep");
 
-    usleep(seconds * 1_000);
+    unsafe {
+        usleep(millis * 1_000);
+    }
     0
 }
 
 /// Implementation of usleep() from newlib in esp-idf.
 /// components/newlib/time.c
-#[no_mangle]
-unsafe extern "C" fn usleep(us: u32) -> crate::binary::c_types::c_int {
-    trace!("usleep");
-    extern "C" {
-        fn esp_rom_delay_us(us: u32);
-    }
-    esp_rom_delay_us(us);
+#[unsafe(no_mangle)]
+unsafe extern "C" fn usleep(us: u32) -> c_int {
+    esp_radio_preempt_driver::usleep(us);
     0
 }
 
-#[no_mangle]
-unsafe extern "C" fn putchar(c: i32) -> crate::binary::c_types::c_int {
+#[unsafe(no_mangle)]
+unsafe extern "C" fn putchar(c: i32) -> c_int {
     trace!("putchar {}", c as u8 as char);
     c
 }

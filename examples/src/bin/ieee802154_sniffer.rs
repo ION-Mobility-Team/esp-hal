@@ -1,6 +1,8 @@
-//! While this can be used as an example it's meant to be used with `extras/ieee802154-sniffer`
+//! While this can be used as an example it's meant to be used with
+//! `extras/ieee802154-sniffer`
 //!
-//! Besides the runtime changeable channel and the output format it's almost identical to ieee802154_receive_all_frames
+//! Besides the runtime changeable channel and the output format it's almost
+//! identical to ieee802154_receive_all_frames
 
 //% CHIPS: esp32c6 esp32h2
 //% FEATURES: esp-ieee802154 esp-hal/unstable
@@ -11,11 +13,13 @@
 use esp_backtrace as _;
 use esp_hal::{
     main,
-    reset::software_reset,
+    system::software_reset,
     uart::{self, Uart},
 };
 use esp_ieee802154::{Config, Ieee802154};
 use esp_println::println;
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 #[main]
 fn main() -> ! {
@@ -40,7 +44,7 @@ fn main() -> ! {
     let mut read = [0u8; 2];
     loop {
         let mut buf = [0u8; 1];
-        _ = uart0.read_bytes(&mut buf);
+        _ = uart0.read(&mut buf);
 
         if buf[0] == b'r' {
             continue;
@@ -57,8 +61,7 @@ fn main() -> ! {
         .parse()
         .unwrap();
 
-    let radio = peripherals.IEEE802154;
-    let mut ieee802154 = Ieee802154::new(radio, peripherals.RADIO_CLK);
+    let mut ieee802154 = Ieee802154::new(peripherals.IEEE802154);
 
     ieee802154.set_config(Config {
         channel,
@@ -77,9 +80,10 @@ fn main() -> ! {
         }
 
         let mut buf = [0u8; 1];
-        _ = uart0.read_bytes(&mut buf);
-        if buf[0] == b'r' {
-            software_reset();
+        if let Ok(_) = uart0.read_buffered(&mut buf) {
+            if buf[0] == b'r' {
+                software_reset();
+            }
         }
     }
 }

@@ -14,11 +14,13 @@ use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::{
     gpio::{Level, Output, OutputConfig},
-    rmt::{PulseCode, Rmt, RxChannelAsync, RxChannelConfig, RxChannelCreatorAsync},
-    time::RateExtU32,
+    rmt::{PulseCode, Rmt, RxChannelAsync, RxChannelConfig, RxChannelCreator},
+    time::Rate,
     timer::timg::TimerGroup,
 };
 use esp_println::{print, println};
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 const WIDTH: usize = 80;
 
@@ -46,9 +48,9 @@ async fn main(spawner: Spawner) {
 
     cfg_if::cfg_if! {
         if #[cfg(feature = "esp32h2")] {
-            let freq = 32.MHz();
+            let freq = Rate::from_mhz(32);
         } else {
-            let freq = 80.MHz();
+            let freq = Rate::from_mhz(80);
         }
     };
 
@@ -59,22 +61,20 @@ async fn main(spawner: Spawner) {
 
     cfg_if::cfg_if! {
         if #[cfg(any(feature = "esp32", feature = "esp32s2"))] {
-            let mut channel = rmt.channel0.configure(peripherals.GPIO4, rx_config).unwrap();
+            let mut channel = rmt.channel0.configure_rx(peripherals.GPIO4, rx_config).unwrap();
         } else if #[cfg(feature = "esp32s3")] {
-            let mut channel = rmt.channel7.configure(peripherals.GPIO4, rx_config).unwrap();
+            let mut channel = rmt.channel7.configure_rx(peripherals.GPIO4, rx_config).unwrap();
         } else {
-            let mut channel = rmt.channel2.configure(peripherals.GPIO4, rx_config).unwrap();
+            let mut channel = rmt.channel2.configure_rx(peripherals.GPIO4, rx_config).unwrap();
         }
     }
 
     spawner
-        .spawn(signal_task(
-            Output::new(
-                peripherals.GPIO5,
-                OutputConfig::default().with_level(Level::Low),
-            )
-            .unwrap(),
-        ))
+        .spawn(signal_task(Output::new(
+            peripherals.GPIO5,
+            Level::Low,
+            OutputConfig::default(),
+        )))
         .unwrap();
 
     let mut data: [u32; 48] = [PulseCode::empty(); 48];

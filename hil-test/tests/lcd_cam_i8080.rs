@@ -7,39 +7,42 @@
 #![no_main]
 
 use esp_hal::{
-    dma::{DmaChannel0, DmaTxBuf},
+    Blocking,
+    dma::DmaTxBuf,
     dma_buffers,
-    gpio::{GpioPin, NoPin},
+    gpio::NoPin,
     lcd_cam::{
-        lcd::i8080::{Command, Config, TxEightBits, TxSixteenBits, I8080},
         BitOrder,
         LcdCam,
+        lcd::i8080::{Command, Config, I8080, TxEightBits, TxSixteenBits},
     },
     pcnt::{
-        channel::{CtrlMode, EdgeMode},
         Pcnt,
+        channel::{CtrlMode, EdgeMode},
     },
-    time::RateExtU32,
-    Blocking,
+    peripherals::DMA_CH0,
+    time::Rate,
 };
 use hil_test as _;
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 const DATA_SIZE: usize = 1024 * 10;
 
 #[allow(non_snake_case)]
 struct Pins {
-    pub GPIO8: GpioPin<8>,
-    pub GPIO11: GpioPin<11>,
-    pub GPIO12: GpioPin<12>,
-    pub GPIO16: GpioPin<16>,
-    pub GPIO17: GpioPin<17>,
+    pub GPIO8: esp_hal::peripherals::GPIO8<'static>,
+    pub GPIO11: esp_hal::peripherals::GPIO11<'static>,
+    pub GPIO12: esp_hal::peripherals::GPIO12<'static>,
+    pub GPIO16: esp_hal::peripherals::GPIO16<'static>,
+    pub GPIO17: esp_hal::peripherals::GPIO17<'static>,
 }
 
 struct Context<'d> {
     lcd_cam: LcdCam<'d, Blocking>,
     pcnt: Pcnt<'d>,
     pins: Pins,
-    dma: DmaChannel0,
+    dma: DMA_CH0<'d>,
     dma_buf: DmaTxBuf,
 }
 
@@ -76,11 +79,12 @@ mod tests {
     fn test_i8080_8bit(ctx: Context<'static>) {
         let pins = TxEightBits::new(NoPin, NoPin, NoPin, NoPin, NoPin, NoPin, NoPin, NoPin);
 
-        let i8080 = I8080::new(ctx.lcd_cam.lcd, ctx.dma, pins, {
-            let mut config = Config::default();
-            config.frequency = 20.MHz();
-            config
-        })
+        let i8080 = I8080::new(
+            ctx.lcd_cam.lcd,
+            ctx.dma,
+            pins,
+            Config::default().with_frequency(Rate::from_mhz(20)),
+        )
         .unwrap();
 
         let xfer = i8080.send(Command::<u8>::None, 0, ctx.dma_buf).unwrap();
@@ -93,11 +97,11 @@ mod tests {
         // issue with configuring pins as outputs after inputs have been sorted
         // out. See https://github.com/esp-rs/esp-hal/pull/2173#issue-2529323702
 
-        let (unit_ctrl, cs_signal) = ctx.pins.GPIO8.split();
-        let (unit0_input, unit0_signal) = ctx.pins.GPIO11.split();
-        let (unit1_input, unit1_signal) = ctx.pins.GPIO12.split();
-        let (unit2_input, unit2_signal) = ctx.pins.GPIO16.split();
-        let (unit3_input, unit3_signal) = ctx.pins.GPIO17.split();
+        let (unit_ctrl, cs_signal) = unsafe { ctx.pins.GPIO8.split() };
+        let (unit0_input, unit0_signal) = unsafe { ctx.pins.GPIO11.split() };
+        let (unit1_input, unit1_signal) = unsafe { ctx.pins.GPIO12.split() };
+        let (unit2_input, unit2_signal) = unsafe { ctx.pins.GPIO16.split() };
+        let (unit3_input, unit3_signal) = unsafe { ctx.pins.GPIO17.split() };
 
         let pcnt = ctx.pcnt;
 
@@ -138,11 +142,12 @@ mod tests {
             NoPin,
         );
 
-        let mut i8080 = I8080::new(ctx.lcd_cam.lcd, ctx.dma, pins, {
-            let mut config = Config::default();
-            config.frequency = 20.MHz();
-            config
-        })
+        let mut i8080 = I8080::new(
+            ctx.lcd_cam.lcd,
+            ctx.dma,
+            pins,
+            Config::default().with_frequency(Rate::from_mhz(20)),
+        )
         .unwrap()
         .with_cs(cs_signal)
         .with_ctrl_pins(NoPin, NoPin);
@@ -206,11 +211,11 @@ mod tests {
         // issue with configuring pins as outputs after inputs have been sorted
         // out. See https://github.com/esp-rs/esp-hal/pull/2173#issue-2529323702
 
-        let (unit_ctrl, cs_signal) = ctx.pins.GPIO8.split();
-        let (unit0_input, unit0_signal) = ctx.pins.GPIO11.split();
-        let (unit1_input, unit1_signal) = ctx.pins.GPIO12.split();
-        let (unit2_input, unit2_signal) = ctx.pins.GPIO16.split();
-        let (unit3_input, unit3_signal) = ctx.pins.GPIO17.split();
+        let (unit_ctrl, cs_signal) = unsafe { ctx.pins.GPIO8.split() };
+        let (unit0_input, unit0_signal) = unsafe { ctx.pins.GPIO11.split() };
+        let (unit1_input, unit1_signal) = unsafe { ctx.pins.GPIO12.split() };
+        let (unit2_input, unit2_signal) = unsafe { ctx.pins.GPIO16.split() };
+        let (unit3_input, unit3_signal) = unsafe { ctx.pins.GPIO17.split() };
 
         let pcnt = ctx.pcnt;
 
@@ -259,11 +264,12 @@ mod tests {
             unit3_signal,
         );
 
-        let mut i8080 = I8080::new(ctx.lcd_cam.lcd, ctx.dma, pins, {
-            let mut config = Config::default();
-            config.frequency = 20.MHz();
-            config
-        })
+        let mut i8080 = I8080::new(
+            ctx.lcd_cam.lcd,
+            ctx.dma,
+            pins,
+            Config::default().with_frequency(Rate::from_mhz(20)),
+        )
         .unwrap()
         .with_cs(cs_signal)
         .with_ctrl_pins(NoPin, NoPin);

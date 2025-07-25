@@ -1,15 +1,17 @@
-use darling::{ast::NestedMeta, FromMeta};
 use proc_macro::{Span, TokenStream};
+use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::Ident;
-use proc_macro_crate::{crate_name, FoundCrate};
 use syn::{
-    parse::Error as SynError,
-    spanned::Spanned,
     AttrStyle,
     Attribute,
     ItemFn,
+    Meta,
     ReturnType,
+    Token,
     Type,
+    parse::{Error as SynError, Parser},
+    punctuated::Punctuated,
+    spanned::Spanned,
 };
 
 pub enum WhiteListCaller {
@@ -17,41 +19,63 @@ pub enum WhiteListCaller {
 }
 
 pub fn handler(args: TokenStream, input: TokenStream) -> TokenStream {
-    #[derive(Debug, FromMeta)]
-    struct MacroArgs {
-        priority: Option<syn::Expr>,
-    }
-
     let mut f: ItemFn = syn::parse(input).expect("`#[handler]` must be applied to a function");
     let original_span = f.span();
 
-    let attr_args = match NestedMeta::parse_meta_list(args.into()) {
+    let attr_args = match Punctuated::<Meta, Token![,]>::parse_terminated.parse2(args.into()) {
         Ok(v) => v,
-        Err(e) => {
-            return TokenStream::from(darling::Error::from(e).write_errors());
-        }
+        Err(e) => return e.into_compile_error().into(),
     };
 
-    let args = match MacroArgs::from_list(&attr_args) {
-        Ok(v) => v,
-        Err(e) => {
-            return TokenStream::from(e.write_errors());
+    let mut priority = None;
+
+    for arg in attr_args {
+        match arg {
+            Meta::NameValue(meta_name_value) => {
+                if meta_name_value.path.is_ident("priority") {
+                    if priority.is_some() {
+                        return SynError::new(
+                            meta_name_value.span(),
+                            "duplicate `priority` attribute",
+                        )
+                        .into_compile_error()
+                        .into();
+                    }
+                    priority = Some(meta_name_value.value);
+                } else {
+                    return SynError::new(meta_name_value.span(), "expected `priority = <value>`")
+                        .into_compile_error()
+                        .into();
+                }
+            }
+            other => {
+                return SynError::new(other.span(), "expected `priority = <value>`")
+                    .into_compile_error()
+                    .into();
+            }
         }
-    };
+    }
 
     let root = Ident::new(
-        if let Ok(FoundCrate::Name(ref name)) = crate_name("esp-hal") {
-            name
-        } else {
-            "crate"
+        match crate_name("esp-hal") {
+            Ok(FoundCrate::Name(ref name)) => name,
+            _ => "crate",
         },
         Span::call_site().into(),
     );
 
-    let priority = if let Some(priority) = args.priority {
-        quote::quote!( #priority )
-    } else {
-        quote::quote! { #root::interrupt::Priority::min() }
+    let priority = match priority {
+        Some(ref priority) => quote::quote!( {
+            const {
+                core::assert!(
+                    !matches!(#priority, #root::interrupt::Priority::None),
+                    "Priority::None is not supported",
+                );
+            };
+
+            #priority
+        } ),
+        _ => quote::quote! { #root::interrupt::Priority::min() },
     };
 
     // XXX should we blacklist other attributes?
@@ -88,7 +112,7 @@ pub fn handler(args: TokenStream, input: TokenStream) -> TokenStream {
     let orig = f.sig.ident;
     let vis = f.vis.clone();
     f.sig.ident = Ident::new(
-        &format!("__esp_hal_internal_{}", orig),
+        &format!("__esp_hal_internal_{orig}"),
         proc_macro2::Span::call_site(),
     );
     let new = f.sig.ident.clone();

@@ -21,10 +21,12 @@ use esp_backtrace as _;
 use esp_hal::{
     dma_buffers,
     i2s::master::{DataFormat, I2s, Standard},
-    time::RateExtU32,
+    time::Rate,
     timer::timg::TimerGroup,
 };
 use esp_println::println;
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 #[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
@@ -42,16 +44,14 @@ async fn main(_spawner: Spawner) {
         }
     }
 
-    let (rx_buffer, rx_descriptors, _, tx_descriptors) = dma_buffers!(4092 * 4, 0);
+    let (rx_buffer, rx_descriptors, _, _) = dma_buffers!(4092 * 4, 0);
 
     let i2s = I2s::new(
         peripherals.I2S0,
         Standard::Philips,
         DataFormat::Data16Channel16,
-        44100u32.Hz(),
+        Rate::from_hz(44100),
         dma_channel,
-        rx_descriptors,
-        tx_descriptors,
     )
     .into_async();
 
@@ -63,7 +63,7 @@ async fn main(_spawner: Spawner) {
         .with_bclk(peripherals.GPIO2)
         .with_ws(peripherals.GPIO4)
         .with_din(peripherals.GPIO5)
-        .build();
+        .build(rx_descriptors);
 
     let buffer = rx_buffer;
     println!("Start");
@@ -75,11 +75,17 @@ async fn main(_spawner: Spawner) {
         println!("available {}", avail);
 
         let count = transaction.pop(&mut data).await.unwrap();
+
+        #[cfg(not(feature = "esp32s2"))]
         println!(
             "got {} bytes, {:x?}..{:x?}",
             count,
             &data[..10],
             &data[count - 10..count]
         );
+
+        // esp-println is a bit slow on ESP32-S2 - don't run into DMA too late errors
+        #[cfg(feature = "esp32s2")]
+        println!("got {} bytes", count,);
     }
 }

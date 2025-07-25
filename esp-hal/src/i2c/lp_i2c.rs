@@ -1,10 +1,9 @@
 //! Low-power I2C driver
 
-use fugit::HertzU32;
-
 use crate::{
     gpio::lp_io::LowPowerOutputOpenDrain,
-    peripherals::{LPWR, LP_AON, LP_I2C0, LP_IO, LP_PERI},
+    peripherals::{LP_AON, LP_I2C0, LP_IO, LP_PERI, LPWR},
+    time::Rate,
 };
 
 const LP_I2C_FILTER_CYC_NUM_DEF: u8 = 7;
@@ -80,16 +79,16 @@ enum Command {
 
 /// Represents a Low-Power I2C peripheral.
 pub struct LpI2c {
-    i2c: LP_I2C0,
+    i2c: LP_I2C0<'static>,
 }
 
 impl LpI2c {
     /// Creates a new instance of the `LpI2c` peripheral.
     pub fn new(
-        i2c: LP_I2C0,
+        i2c: LP_I2C0<'static>,
         _sda: LowPowerOutputOpenDrain<'_, 6>,
         _scl: LowPowerOutputOpenDrain<'_, 7>,
-        frequency: HertzU32,
+        frequency: Rate,
     ) -> Self {
         let me = Self { i2c };
 
@@ -201,7 +200,7 @@ impl LpI2c {
         // call
 
         let source_clk = 16_000_000;
-        let bus_freq = frequency.raw();
+        let bus_freq = frequency.as_hz();
 
         let clkm_div: u32 = source_clk / (bus_freq * 1024) + 1;
         let sclk_freq: u32 = source_clk / clkm_div;

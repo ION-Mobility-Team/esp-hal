@@ -13,7 +13,7 @@ name: CI
 
 on:
   pull_request:
-      types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened]
   push:
     branches-ignore:
       - "gh-readonly-queue/**"
@@ -24,7 +24,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  MSRV: "1.84.0"
+  MSRV: "1.88.0"
   DEFMT_LOG: trace
 
 # Cancel any currently running workflows from the same PR, branch, or
@@ -43,6 +43,8 @@ jobs:
     name: esp-hal (${{ matrix.device.soc }})
     runs-on: ubuntu-latest
     env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      CI: 1
       SSID: SSID
       PASSWORD: PASSWORD
       STATIC_IP: 1.1.1.1
@@ -54,51 +56,59 @@ jobs:
       matrix:
         device: [
             # RISC-V devices:
-            { soc: "esp32c2", target: "riscv32imc-unknown-none-elf", toolchain: "stable" },
-            { soc: "esp32c3", target: "riscv32imc-unknown-none-elf", toolchain: "stable" },
-            { soc: "esp32c6", target: "riscv32imac-unknown-none-elf", toolchain: "stable" },
-            { soc: "esp32h2", target: "riscv32imac-unknown-none-elf", toolchain: "stable" },
+            { soc: "esp32c2", toolchain: "stable" },
+            { soc: "esp32c3", toolchain: "stable" },
+            { soc: "esp32c6", toolchain: "stable" },
+            { soc: "esp32h2", toolchain: "stable" },
             # Xtensa devices:
-            { soc: "esp32", target: "xtensa-esp32-none-elf", toolchain: "esp" },
-            { soc: "esp32s2", target: "xtensa-esp32s2-none-elf", toolchain: "esp" },
-            { soc: "esp32s3", target: "xtensa-esp32s3-none-elf", toolchain: "esp" },
+            { soc: "esp32", toolchain: "esp" },
+            { soc: "esp32s2", toolchain: "esp" },
+            { soc: "esp32s3", toolchain: "esp" },
           ]
     steps:
       - uses: actions/checkout@v4
 
       # Install the Rust toolchain for Xtensa devices:
-      - uses: esp-rs/xtensa-toolchain@v1.5
+      - uses: esp-rs/xtensa-toolchain@v1.6
         with:
-          ldproxy: false
-          version: 1.84.0.0
+          version: 1.88.0.0
+
       # Install the Rust stable toolchain for RISC-V devices:
       - uses: dtolnay/rust-toolchain@v1
         with:
           target: riscv32imc-unknown-none-elf,riscv32imac-unknown-none-elf
           toolchain: stable
           components: rust-src
+      # Install the Rust nightly toolchain for RISC-V devices, because of `-Zdoctest-xcompile`
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          target: riscv32imc-unknown-none-elf,riscv32imac-unknown-none-elf
+          toolchain: nightly
+          components: rust-src
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "ci-${{ matrix.device.soc }}"
+          cache-all-crates: true
 
       - name: Build and Check
-        uses: ./.github/actions/check-esp-hal
-        with:
-          device: ${{ matrix.device.soc }}
-          target: ${{ matrix.device.target }}
-          toolchain: ${{ matrix.device.toolchain }}
+        shell: bash
+        run: cargo xcheck ci ${{ matrix.device.soc }} --toolchain ${{ matrix.device.toolchain }}
+
+      - name: Semver-Check
+        shell: bash
+        # always invokes +esp internally
+        run: cargo xcheck semver-check --chips ${{ matrix.device.soc }} check
 
   extras:
-    runs-on: ubuntu-latest
+    runs-on: macos-m1-self-hosted
 
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@v2
 
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get -y install musl-tools libudev-dev pkg-config
       # Build the extra crates
       - name: Build the bench-server
         run: cd extras/bench-server && cargo build
@@ -111,88 +121,67 @@ jobs:
   # MSRV
 
   msrv:
-    runs-on: ubuntu-latest
-    env:
-      RUSTC_BOOTSTRAP: 1
+    runs-on: macos-m1-self-hosted
 
     steps:
       - uses: actions/checkout@v4
-      - uses: esp-rs/xtensa-toolchain@v1.5
+      - uses: esp-rs/xtensa-toolchain@v1.6
         with:
-          ldproxy: false
           version: ${{ env.MSRV }}
       - uses: dtolnay/rust-toolchain@v1
         with:
           target: riscv32imc-unknown-none-elf,riscv32imac-unknown-none-elf
           toolchain: ${{ env.MSRV }}
-          components: rust-src
-      - uses: Swatinem/rust-cache@v2
+          components: rust-src,clippy
 
-      # Verify the MSRV for all RISC-V chips.
+      - name: Stable toolchain checks
+        run: rustc +${{ env.MSRV }} --version --verbose
+      - name: esp toolchain checks
+        run: rustc +esp --version --verbose
+
+      # Verify the MSRV for all chips by running a lint session
       - name: msrv RISCV (esp-hal)
         run: |
-          cargo xtask build-package --features=esp32c2,ci --target=riscv32imc-unknown-none-elf   esp-hal
-          cargo xtask build-package --features=esp32c3,ci --target=riscv32imc-unknown-none-elf   esp-hal
-          cargo xtask build-package --features=esp32c6,ci --target=riscv32imac-unknown-none-elf  esp-hal
-          cargo xtask build-package --features=esp32h2,ci --target=riscv32imac-unknown-none-elf  esp-hal
-
-      - name: msrv RISCV (esp-wifi)
-        run: |
-          cargo xtask build-package --features=esp32c2,wifi,ble,esp-hal/unstable --target=riscv32imc-unknown-none-elf   esp-wifi
-          cargo xtask build-package --features=esp32c3,wifi,ble,esp-hal/unstable --target=riscv32imc-unknown-none-elf   esp-wifi
-          cargo xtask build-package --features=esp32c6,wifi,ble,esp-hal/unstable --target=riscv32imac-unknown-none-elf  esp-wifi
-          cargo xtask build-package --features=esp32h2,ble,esp-hal/unstable --target=riscv32imac-unknown-none-elf  esp-wifi
-
-        # Verify the MSRV for all Xtensa chips:
+          cargo xtask lint-packages --chips esp32c2,esp32c3,esp32c6,esp32h2 --toolchain ${{ env.MSRV }}
       - name: msrv Xtensa (esp-hal)
         run: |
-          cargo xtask build-package --toolchain=esp --features=esp32,ci   --target=xtensa-esp32-none-elf   esp-hal
-          cargo xtask build-package --toolchain=esp --features=esp32s2,ci --target=xtensa-esp32s2-none-elf esp-hal
-          cargo xtask build-package --toolchain=esp --features=esp32s3,ci --target=xtensa-esp32s3-none-elf esp-hal
-
-      - name: msrv Xtensa (esp-wifi)
-        run: |
-          cargo xtask build-package --toolchain=esp --features=esp32,wifi,ble,esp-hal/unstable   --target=xtensa-esp32-none-elf   esp-wifi
-          cargo xtask build-package --toolchain=esp --features=esp32s2,wifi,esp-hal/unstable     --target=xtensa-esp32s2-none-elf esp-wifi
-          cargo xtask build-package --toolchain=esp --features=esp32s3,wifi,ble,esp-hal/unstable --target=xtensa-esp32s3-none-elf esp-wifi
-
-      - name: msrv (esp-lp-hal)
-        run: |
-          cargo xtask build-package --features=esp32c6 --target=riscv32imac-unknown-none-elf esp-lp-hal
-          cargo xtask build-package --features=esp32s2 --target=riscv32imc-unknown-none-elf  esp-lp-hal
-          cargo xtask build-package --features=esp32s3 --target=riscv32imc-unknown-none-elf  esp-lp-hal
-
-  # --------------------------------------------------------------------------
-  # Format
-
-  rustfmt:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-      # Some of the configuration items in 'rustfmt.toml' require the 'nightly'
-      # release channel:
-      - uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: nightly
-          components: rustfmt
-      - uses: Swatinem/rust-cache@v2
-
-      # Check the formatting of all packages:
-      - run: cargo xtask fmt-packages --check
+          cargo xtask lint-packages --chips esp32,esp32s2,esp32s3 --toolchain esp
 
   # --------------------------------------------------------------------------
   # host tests
 
   host-tests:
-    runs-on: ubuntu-latest
+    runs-on: macos-m1-self-hosted
 
     steps:
       - uses: actions/checkout@v4
+      # Some of the configuration items in 'rustfmt.toml' require the 'nightly'
+      # release channel, MIRI is only available in nightly
       - uses: dtolnay/rust-toolchain@v1
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@v2
+          toolchain: nightly
+          components: rustfmt,miri
+
+      # Run xtask tests
+      - name: Run xtask tests
+        run: cd xtask && cargo test --features release
 
       # Check the formatting of all packages:
-      - run: cd esp-config && cargo test --features build
+      - run: cargo xtask fmt-packages --check
+
+      # Check metadata generation for all packages:
+      - run: cargo xtask update-metadata --check
+
+      # Run tests in esp-config
+      - run: cd esp-config && cargo test --features build,tui
+
+      # Run tests in esp-bootloader-esp-idf
+      - run: cd esp-bootloader-esp-idf && cargo test --features=std
+
+      # Run tests in esp-storage
+      - run: cd esp-storage && cargo test --features=emulation -- --test-threads=1
+      - run: cd esp-storage && cargo test --features=emulation,bytewise-read -- --test-threads=1
+
+      # Miri tests in esp-storage
+      - run: cd esp-storage && cargo +nightly miri test --features=emulation -- --test-threads=1
+      - run: cd esp-storage && cargo +nightly miri test --features=emulation,bytewise-read -- --test-threads=1

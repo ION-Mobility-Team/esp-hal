@@ -102,6 +102,7 @@ pub struct SingleStandardFilter {
 }
 
 impl SingleStandardFilter {
+    #[procmacros::doc_replace]
     /// Create a new filter that matches against a single 11-bit standard id.
     /// The filter can match against the packet's id, RTR bit, and first two
     /// bytes of the payload.
@@ -109,15 +110,11 @@ impl SingleStandardFilter {
     /// Example matching only even IDs, allowing any rtr value and any payload
     /// data:
     /// ```rust, no_run
-    #[doc = crate::before_snippet!()]
+    /// # {before_snippet}
     /// # use esp_hal::twai::filter::SingleStandardFilter;
     /// const FILTER: SingleStandardFilter =
-    ///     SingleStandardFilter::new(
-    ///         b"xxxxxxxxxx0",
-    ///         b"x",
-    ///         [b"xxxxxxxx", b"xxxxxxxx"]
-    ///     );
-    /// # }
+    ///     SingleStandardFilter::new(b"xxxxxxxxxx0", b"x", [b"xxxxxxxx", b"xxxxxxxx"]);
+    /// # {after_snippet}
     /// ```
     pub const fn new(id: &BitFilter<11>, rtr: &BitFilter<1>, payload: [&BitFilter<8>; 2]) -> Self {
         // The bit values we desire to match against. This determines whether we want a
@@ -177,8 +174,8 @@ impl SingleStandardFilter {
     /// frame, with any bytes for the first two payload bytes.
     /// ```rust, ignore
     /// let filter = twai::filter::SingleStandardFilter::new_from_code_mask(
-    ///     StandardId::new(0x000).unwrap(),
-    ///     StandardId::new(0x001).unwrap(),
+    ///     StandardId::new(0x000)?,
+    ///     StandardId::new(0x001)?,
     ///     false,
     ///     true,
     ///     [0x00, 0x00],
@@ -404,7 +401,7 @@ impl DualStandardFilter {
     /// The masks indicate which bits of the code the filter should match
     /// against. Set bits in the mask indicate that the corresponding bit in
     /// the code should match.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new_from_code_mask(
         first_id_code: StandardId,
         first_id_mask: StandardId,

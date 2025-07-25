@@ -1,9 +1,8 @@
 //! WiFi sniffer example
 //!
 //! Sniffs for beacon frames.
-//!
 
-//% FEATURES: esp-wifi esp-wifi/wifi esp-wifi/utils esp-wifi/sniffer esp-hal/unstable
+//% FEATURES: esp-wifi esp-wifi/wifi esp-wifi/sniffer esp-hal/unstable
 //% CHIPS: esp32 esp32s2 esp32s3 esp32c2 esp32c3 esp32c6
 
 #![no_std]
@@ -19,10 +18,12 @@ use core::cell::RefCell;
 
 use critical_section::Mutex;
 use esp_backtrace as _;
-use esp_hal::{clock::CpuClock, main, rng::Rng, timer::timg::TimerGroup};
+use esp_hal::{clock::CpuClock, main, timer::timg::TimerGroup};
 use esp_println::println;
-use esp_wifi::{init, wifi};
+use esp_wifi::wifi;
 use ieee80211::{match_frames, mgmt_frame::BeaconFrame};
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 static KNOWN_SSIDS: Mutex<RefCell<BTreeSet<String>>> = Mutex::new(RefCell::new(BTreeSet::new()));
 
@@ -32,23 +33,21 @@ fn main() -> ! {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
-    esp_alloc::heap_allocator!(72 * 1024);
+    esp_alloc::heap_allocator!(size: 72 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    let init = init(
-        timg0.timer0,
-        Rng::new(peripherals.RNG),
-        peripherals.RADIO_CLK,
-    )
-    .unwrap();
+    esp_radio_preempt_baremetal::init(timg0.timer0);
 
-    let wifi = peripherals.WIFI;
+    let esp_wifi_ctrl = esp_wifi::init().unwrap();
 
     // We must initialize some kind of interface and start it.
-    let (_, mut controller) = wifi::new_with_mode(&init, wifi, wifi::WifiApDevice).unwrap();
+    let (mut controller, interfaces) =
+        esp_wifi::wifi::new(&esp_wifi_ctrl, peripherals.WIFI).unwrap();
+
+    controller.set_mode(wifi::WifiMode::Sta).unwrap();
     controller.start().unwrap();
 
-    let mut sniffer = controller.take_sniffer().unwrap();
+    let mut sniffer = interfaces.sniffer;
     sniffer.set_promiscuous_mode(true).unwrap();
     sniffer.set_receive_cb(|packet| {
         let _ = match_frames! {

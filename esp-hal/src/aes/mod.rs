@@ -1,3 +1,4 @@
+#![cfg_attr(docsrs, procmacros::doc_replace)]
 //! # Advanced Encryption Standard (AES).
 //!
 //! ## Overview
@@ -22,7 +23,7 @@
 //! Simple example of encrypting and decrypting a message using AES-128:
 //!
 //! ```rust, no_run
-#![doc = crate::before_snippet!()]
+//! # {before_snippet}
 //! # use esp_hal::aes::{Aes, Mode};
 //! # let keytext = b"SUp4SeCp@sSw0rd";
 //! # let plaintext = b"message";
@@ -40,9 +41,9 @@
 //! aes.process(&mut block, Mode::Decryption128, keybuf);
 //!
 //! // The decryption happens in-place, so the plaintext is in `block`
-//! # }
+//! # {after_snippet}
 //! ```
-//! 
+//!
 //! ### AES-DMA
 //!
 //! Visit the [AES-DMA] test for a more advanced example of using AES-DMA
@@ -52,12 +53,11 @@
 //!
 //! ## Implementation State
 //!
-//! * AES-DMA mode is currently not supported on ESP32 and ESP32S2
+//! * AES-DMA mode is currently not supported on ESP32
 //! * AES-DMA Initialization Vector (IV) is currently not supported
 
 use crate::{
     pac,
-    peripheral::{Peripheral, PeripheralRef},
     peripherals::AES,
     reg_access::{AlignmentHelper, NativeEndianess},
     system::GenericPeripheralGuard,
@@ -73,79 +73,78 @@ mod aes_spec_impl;
 
 const ALIGN_SIZE: usize = core::mem::size_of::<u32>();
 
-/// Represents the various key sizes allowed for AES encryption and decryption.
-pub enum Key {
-    /// 128-bit AES key
-    Key16([u8; 16]),
-    /// 192-bit AES key
-    #[cfg(any(esp32, esp32s2))]
-    Key24([u8; 24]),
-    /// 256-bit AES key
-    Key32([u8; 32]),
-}
-
-// Implementing From for easy conversion from array to Key enum.
-impl From<[u8; 16]> for Key {
-    fn from(key: [u8; 16]) -> Self {
-        Key::Key16(key)
-    }
-}
-
-#[cfg(any(esp32, esp32s2))]
-impl From<[u8; 24]> for Key {
-    fn from(key: [u8; 24]) -> Self {
-        Key::Key24(key)
-    }
-}
-
-impl From<[u8; 32]> for Key {
-    fn from(key: [u8; 32]) -> Self {
-        Key::Key32(key)
-    }
-}
-
-impl Key {
-    /// Returns a slice representation of the AES key.
-    fn as_slice(&self) -> &[u8] {
-        match self {
-            Key::Key16(ref key) => key,
-            #[cfg(any(esp32, esp32s2))]
-            Key::Key24(ref key) => key,
-            Key::Key32(ref key) => key,
+for_each_aes_key_length! {
+    ($len:literal) => {
+        // Implementing From for easy conversion from array to Key enum.
+        impl From<[u8; $len / 8]> for Key {
+            fn from(key: [u8; $len / 8]) -> Self {
+                paste::paste! {
+                    Key::[<Key $len>](key)
+                }
+            }
         }
-    }
-}
 
-/// Defines the operating modes for AES encryption and decryption.
-pub enum Mode {
-    /// Encryption mode with 128-bit key
-    Encryption128 = 0,
-    /// Encryption mode with 192-bit key
-    #[cfg(any(esp32, esp32s2))]
-    Encryption192 = 1,
-    /// Encryption mode with 256-bit key
-    Encryption256 = 2,
-    /// Decryption mode with 128-bit key
-    Decryption128 = 4,
-    /// Decryption mode with 192-bit key
-    #[cfg(any(esp32, esp32s2))]
-    Decryption192 = 5,
-    /// Decryption mode with 256-bit key
-    Decryption256 = 6,
+        paste::paste! {
+            #[doc = concat!("Marker type for AES-", stringify!($len))]
+            pub struct [<Aes $len>];
+
+            impl crate::private::Sealed for [<Aes $len>] {}
+            impl AesFlavour for [<Aes $len>] {
+                type KeyType<'b> = &'b [u8; $len / 8];
+            }
+        }
+    };
+
+    (bits $( ($len:literal) ),*) => {
+        paste::paste! {
+            /// Represents the various key sizes allowed for AES encryption and decryption.
+            pub enum Key {
+                $(
+                    #[doc = concat!(stringify!($len), "-bit AES key")]
+                    [<Key $len>]([u8; $len / 8]),
+                )*
+            }
+
+            impl Key {
+                /// Returns a slice representation of the AES key.
+                fn as_slice(&self) -> &[u8] {
+                    match self {
+                        $(
+                            Self::[<Key $len>](key) => key.as_ref(),
+                        )*
+                    }
+                }
+            }
+        }
+    };
+
+    (modes $(($bits:literal, $encrypt:literal, $decrypt:literal)),*) => {
+        paste::paste! {
+            /// Defines the operating modes for AES encryption and decryption.
+            #[repr(C)]
+            pub enum Mode {
+                $(
+                    #[doc= concat!("Encryption mode with ", stringify!($len), "-bit key")]
+                    [<Encryption $bits>] = $encrypt,
+
+                    #[doc= concat!("Decryption mode with ", stringify!($len), "-bit key")]
+                    [<Decryption $bits>] = $decrypt,
+                )*
+            }
+        }
+    };
 }
 
 /// AES peripheral container
 pub struct Aes<'d> {
-    aes: PeripheralRef<'d, AES>,
+    aes: AES<'d>,
     alignment_helper: AlignmentHelper<NativeEndianess>,
     _guard: GenericPeripheralGuard<{ crate::system::Peripheral::Aes as u8 }>,
 }
 
 impl<'d> Aes<'d> {
     /// Constructs a new `Aes` instance.
-    pub fn new(aes: impl Peripheral<P = AES> + 'd) -> Self {
-        crate::into_ref!(aes);
-
+    pub fn new(aes: AES<'d>) -> Self {
         let guard = GenericPeripheralGuard::new();
 
         let mut ret = Self {
@@ -202,21 +201,6 @@ pub trait AesFlavour: crate::private::Sealed {
     type KeyType<'b>;
 }
 
-/// Marker type for AES-128
-pub struct Aes128;
-
-/// Marker type for AES-192
-#[cfg(any(esp32, esp32s2))]
-pub struct Aes192;
-
-/// Marker type for AES-256
-pub struct Aes256;
-
-impl crate::private::Sealed for Aes128 {}
-#[cfg(any(esp32, esp32s2))]
-impl crate::private::Sealed for Aes192 {}
-impl crate::private::Sealed for Aes256 {}
-
 /// State matrix endianness
 #[cfg(any(esp32, esp32s2))]
 pub enum Endianness {
@@ -232,31 +216,23 @@ pub enum Endianness {
 /// transfer, which can significantly speed up operations when dealing with
 /// large data volumes. It supports various cipher modes such as ECB, CBC, OFB,
 /// CTR, CFB8, and CFB128.
-#[cfg(any(esp32c3, esp32c6, esp32h2, esp32s2, esp32s3))]
+#[cfg(aes_dma)]
 pub mod dma {
+    use core::mem::ManuallyDrop;
+
     use crate::{
+        Blocking,
         aes::{Key, Mode},
         dma::{
-            dma_private::{DmaSupport, DmaSupportRx, DmaSupportTx},
             Channel,
-            ChannelRx,
-            ChannelTx,
-            DescriptorChain,
             DmaChannelFor,
-            DmaDescriptor,
             DmaPeripheral,
-            DmaTransferRxTx,
+            DmaRxBuffer,
+            DmaTxBuffer,
             PeripheralDmaChannel,
-            PeripheralRxChannel,
-            PeripheralTxChannel,
-            ReadBuffer,
-            Rx,
-            Tx,
-            WriteBuffer,
         },
-        peripheral::Peripheral,
         peripherals::AES,
-        Blocking,
+        system::{Peripheral, PeripheralClockControl},
     };
 
     const ALIGN_SIZE: usize = core::mem::size_of::<u32>();
@@ -265,17 +241,23 @@ pub mod dma {
     #[derive(Clone, Copy, PartialEq, Eq)]
     pub enum CipherMode {
         /// Electronic Codebook Mode
+        #[cfg(aes_dma_mode_ecb)]
         Ecb = 0,
         /// Cipher Block Chaining Mode
         Cbc,
         /// Output Feedback Mode
+        #[cfg(aes_dma_mode_ofb)]
         Ofb,
         /// Counter Mode.
+        #[cfg(aes_dma_mode_ctr)]
         Ctr,
         /// Cipher Feedback Mode with 8-bit shifting.
+        #[cfg(aes_dma_mode_cfb8)]
         Cfb8,
         /// Cipher Feedback Mode with 128-bit shifting.
+        #[cfg(aes_dma_mode_cfb128)]
         Cfb128,
+        // TODO: GCM needs different handling, not supported yet
     }
 
     /// A DMA capable AES instance.
@@ -284,30 +266,15 @@ pub mod dma {
         /// The underlying [`Aes`](super::Aes) driver
         pub aes: super::Aes<'d>,
 
-        channel: Channel<'d, Blocking, PeripheralDmaChannel<AES>>,
-        rx_chain: DescriptorChain,
-        tx_chain: DescriptorChain,
+        channel: Channel<Blocking, PeripheralDmaChannel<AES<'d>>>,
     }
 
     impl<'d> crate::aes::Aes<'d> {
         /// Enable DMA for the current instance of the AES driver
-        pub fn with_dma<CH>(
-            self,
-            channel: impl Peripheral<P = CH> + 'd,
-            rx_descriptors: &'static mut [DmaDescriptor],
-            tx_descriptors: &'static mut [DmaDescriptor],
-        ) -> AesDma<'d>
-        where
-            CH: DmaChannelFor<AES>,
-        {
-            let channel = Channel::new(channel.map(|ch| ch.degrade()));
+        pub fn with_dma(self, channel: impl DmaChannelFor<AES<'d>>) -> AesDma<'d> {
+            let channel = Channel::new(channel.degrade());
             channel.runtime_ensure_compatible(&self.aes);
-            AesDma {
-                aes: self,
-                channel,
-                rx_chain: DescriptorChain::new(rx_descriptors),
-                tx_chain: DescriptorChain::new(tx_descriptors),
-            }
+            AesDma { aes: self, channel }
         }
     }
 
@@ -317,47 +284,7 @@ pub mod dma {
         }
     }
 
-    impl DmaSupport for AesDma<'_> {
-        fn peripheral_wait_dma(&mut self, _is_rx: bool, _is_tx: bool) {
-            while self.aes.regs().state().read().state().bits() != 2 // DMA status DONE == 2
-            && !self.channel.tx.is_done()
-            {
-                // wait until done
-            }
-
-            self.finish_transform();
-        }
-
-        fn peripheral_dma_stop(&mut self) {
-            unreachable!("unsupported")
-        }
-    }
-
-    impl<'d> DmaSupportTx for AesDma<'d> {
-        type TX = ChannelTx<'d, Blocking, PeripheralTxChannel<AES>>;
-
-        fn tx(&mut self) -> &mut Self::TX {
-            &mut self.channel.tx
-        }
-
-        fn chain(&mut self) -> &mut DescriptorChain {
-            &mut self.tx_chain
-        }
-    }
-
-    impl<'d> DmaSupportRx for AesDma<'d> {
-        type RX = ChannelRx<'d, Blocking, PeripheralRxChannel<AES>>;
-
-        fn rx(&mut self) -> &mut Self::RX {
-            &mut self.channel.rx
-        }
-
-        fn chain(&mut self) -> &mut DescriptorChain {
-            &mut self.rx_chain
-        }
-    }
-
-    impl AesDma<'_> {
+    impl<'d> AesDma<'d> {
         /// Writes the encryption key to the AES hardware, checking that its
         /// length matches expected constraints.
         pub fn write_key<K>(&mut self, key: K)
@@ -379,104 +306,66 @@ pub mod dma {
 
         /// Perform a DMA transfer.
         ///
-        /// This will return a [DmaTransferRxTx]. The maximum amount of data to
+        /// This will return a [AesTransfer]. The maximum amount of data to
         /// be sent/received is 32736 bytes.
-        pub fn process<'t, K, TXBUF, RXBUF>(
-            &'t mut self,
-            words: &'t TXBUF,
-            read_buffer: &'t mut RXBUF,
+        pub fn process<K, RXBUF, TXBUF>(
+            mut self,
+            number_of_blocks: usize,
+            mut output: RXBUF,
+            mut input: TXBUF,
             mode: Mode,
             cipher_mode: CipherMode,
             key: K,
-        ) -> Result<DmaTransferRxTx<'t, Self>, crate::dma::DmaError>
+        ) -> Result<AesTransfer<'d, RXBUF, TXBUF>, (crate::dma::DmaError, Self, RXBUF, TXBUF)>
         where
             K: Into<Key>,
-            TXBUF: ReadBuffer,
-            RXBUF: WriteBuffer,
-        {
-            let (write_ptr, write_len) = unsafe { words.read_buffer() };
-            let (read_ptr, read_len) = unsafe { read_buffer.write_buffer() };
-
-            self.start_transfer_dma(
-                read_ptr,
-                read_len,
-                write_ptr,
-                write_len,
-                mode,
-                cipher_mode,
-                key.into(),
-            )?;
-
-            Ok(DmaTransferRxTx::new(self))
-        }
-
-        #[allow(clippy::too_many_arguments)]
-        fn start_transfer_dma<K>(
-            &mut self,
-            read_buffer_ptr: *mut u8,
-            read_buffer_len: usize,
-            write_buffer_ptr: *const u8,
-            write_buffer_len: usize,
-            mode: Mode,
-            cipher_mode: CipherMode,
-            key: K,
-        ) -> Result<(), crate::dma::DmaError>
-        where
-            K: Into<Key>,
+            TXBUF: DmaTxBuffer,
+            RXBUF: DmaRxBuffer,
         {
             // AES has to be restarted after each calculation
             self.reset_aes();
 
-            unsafe {
-                self.tx_chain
-                    .fill_for_tx(false, write_buffer_ptr, write_buffer_len)?;
+            let result = unsafe {
                 self.channel
                     .tx
-                    .prepare_transfer_without_start(self.dma_peripheral(), &self.tx_chain)
-                    .and_then(|_| self.channel.tx.start_transfer())?;
+                    .prepare_transfer(self.dma_peripheral(), &mut input)
+                    .and_then(|_| self.channel.tx.start_transfer())
+            };
+            if let Err(err) = result {
+                return Err((err, self, output, input));
+            }
 
-                self.rx_chain
-                    .fill_for_rx(false, read_buffer_ptr, read_buffer_len)?;
+            let result = unsafe {
                 self.channel
                     .rx
-                    .prepare_transfer_without_start(self.dma_peripheral(), &self.rx_chain)
-                    .and_then(|_| self.channel.rx.start_transfer())?;
+                    .prepare_transfer(self.dma_peripheral(), &mut output)
+                    .and_then(|_| self.channel.rx.start_transfer())
+            };
+            if let Err(err) = result {
+                self.channel.tx.stop_transfer();
+
+                return Err((err, self, output, input));
             }
+
             self.enable_dma(true);
             self.enable_interrupt();
             self.aes.write_mode(mode);
             self.set_cipher_mode(cipher_mode);
             self.write_key(key.into());
 
-            self.set_num_block((write_buffer_len as u32).div_ceil(16));
+            self.set_num_block(number_of_blocks as u32);
 
             self.start_transform();
 
-            Ok(())
+            Ok(AesTransfer {
+                aes_dma: ManuallyDrop::new(self),
+                rx_view: ManuallyDrop::new(output.into_view()),
+                tx_view: ManuallyDrop::new(input.into_view()),
+            })
         }
 
-        #[cfg(any(esp32c3, esp32s2, esp32s3))]
         fn reset_aes(&self) {
-            use crate::peripherals::SYSTEM;
-
-            SYSTEM::regs()
-                .perip_rst_en1()
-                .modify(|_, w| w.crypto_aes_rst().set_bit());
-            SYSTEM::regs()
-                .perip_rst_en1()
-                .modify(|_, w| w.crypto_aes_rst().clear_bit());
-        }
-
-        #[cfg(any(esp32c6, esp32h2))]
-        fn reset_aes(&self) {
-            use crate::peripherals::PCR;
-
-            PCR::regs()
-                .aes_conf()
-                .modify(|_, w| w.aes_rst_en().set_bit());
-            PCR::regs()
-                .aes_conf()
-                .modify(|_, w| w.aes_rst_en().clear_bit());
+            PeripheralClockControl::reset(Peripheral::Aes);
         }
 
         fn dma_peripheral(&self) -> DmaPeripheral {
@@ -523,6 +412,82 @@ pub mod dma {
                 .regs()
                 .block_num()
                 .modify(|_, w| unsafe { w.block_num().bits(block) });
+        }
+    }
+
+    /// Represents an ongoing (or potentially stopped) transfer with the Aes.
+    #[instability::unstable]
+    pub struct AesTransfer<'d, RX: DmaRxBuffer, TX: DmaTxBuffer> {
+        aes_dma: ManuallyDrop<AesDma<'d>>,
+        rx_view: ManuallyDrop<RX::View>,
+        tx_view: ManuallyDrop<TX::View>,
+    }
+
+    impl<'d, RX: DmaRxBuffer, TX: DmaTxBuffer> AesTransfer<'d, RX, TX> {
+        /// Returns true when [Self::wait] will not block.
+        pub fn is_done(&self) -> bool {
+            // DMA status DONE == 2
+            self.aes_dma.aes.regs().state().read().state().bits() == 2
+        }
+
+        /// Waits for the transfer to finish and returns the peripheral and
+        /// buffers.
+        pub fn wait(mut self) -> (AesDma<'d>, RX, TX) {
+            while !self.is_done() {}
+
+            // Stop the DMA as it doesn't know that the aes has stopped.
+            self.aes_dma.channel.rx.stop_transfer();
+            self.aes_dma.channel.tx.stop_transfer();
+
+            self.aes_dma.finish_transform();
+
+            let (aes_dma, rx_view, tx_view) = unsafe {
+                let aes_dma = ManuallyDrop::take(&mut self.aes_dma);
+                let rx_view = ManuallyDrop::take(&mut self.rx_view);
+                let tx_view = ManuallyDrop::take(&mut self.tx_view);
+                core::mem::forget(self);
+                (aes_dma, rx_view, tx_view)
+            };
+
+            (aes_dma, RX::from_view(rx_view), TX::from_view(tx_view))
+        }
+
+        /// Provides shared access to the DMA rx buffer view.
+        pub fn rx_view(&self) -> &RX::View {
+            &self.rx_view
+        }
+
+        /// Provides exclusive access to the DMA rx buffer view.
+        pub fn rx_view_mut(&mut self) -> &mut RX::View {
+            &mut self.rx_view
+        }
+
+        /// Provides shared access to the DMA tx buffer view.
+        pub fn tx_view(&self) -> &TX::View {
+            &self.tx_view
+        }
+
+        /// Provides exclusive access to the DMA tx buffer view.
+        pub fn tx_view_mut(&mut self) -> &mut TX::View {
+            &mut self.tx_view
+        }
+    }
+
+    impl<RX: DmaRxBuffer, TX: DmaTxBuffer> Drop for AesTransfer<'_, RX, TX> {
+        fn drop(&mut self) {
+            // Stop the DMA to prevent further memory access.
+            self.aes_dma.channel.rx.stop_transfer();
+            self.aes_dma.channel.tx.stop_transfer();
+
+            // SAFETY: This is Drop, we know that self.i8080 and self.buf_view
+            // won't be touched again.
+            unsafe {
+                ManuallyDrop::drop(&mut self.aes_dma);
+            }
+            let rx_view = unsafe { ManuallyDrop::take(&mut self.rx_view) };
+            let tx_view = unsafe { ManuallyDrop::take(&mut self.tx_view) };
+            let _ = RX::from_view(rx_view);
+            let _ = TX::from_view(tx_view);
         }
     }
 }

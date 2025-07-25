@@ -1,3 +1,4 @@
+#![cfg_attr(docsrs, procmacros::doc_replace)]
 //! # Configuration
 //!
 //! ## Overview
@@ -14,29 +15,31 @@
 //! ### Default initialization
 //!
 //! ```rust, no_run
-#![doc = crate::before_snippet!()]
+//! # {before_snippet}
 //! let peripherals = esp_hal::init(esp_hal::Config::default());
-//! # }
+//! # {after_snippet}
 //! ```
-//! 
+//!
 //! ### Custom initialization
 //! ```rust, no_run
-#![doc = crate::before_snippet!()]
-//! use esp_hal::clock::CpuClock;
-//!
-//! let config =
-//! esp_hal::Config::default().with_cpu_clock(CpuClock::max()).
-//!     with_watchdog(esp_hal::config::WatchdogConfig::default().
-//!     with_rwdt(esp_hal::config::WatchdogStatus::Enabled(fugit::MicrosDurationU64::millis(1000u64))));
+//! # {before_snippet}
+//! use esp_hal::{clock::CpuClock, time::Duration};
+//! let config = esp_hal::Config::default()
+//!     .with_cpu_clock(CpuClock::max())
+//!     .with_watchdog(esp_hal::config::WatchdogConfig::default().with_rwdt(
+//!         esp_hal::config::WatchdogStatus::Enabled(Duration::from_millis(1000u64)),
+//!     ));
 //! let peripherals = esp_hal::init(config);
-//! # }
+//! # {after_snippet}
 //! ```
 
+use crate::time::Duration;
+
 /// Watchdog status.
-#[derive(Default, PartialEq)]
+#[derive(Default, PartialEq, Clone, Copy)]
 pub enum WatchdogStatus {
     /// Enables a watchdog timer with the specified timeout.
-    Enabled(fugit::MicrosDurationU64),
+    Enabled(Duration),
     /// Disables the watchdog timer.
     #[default]
     Disabled,
@@ -44,19 +47,20 @@ pub enum WatchdogStatus {
 
 /// Watchdog configuration.
 #[non_exhaustive]
-#[derive(Default, procmacros::BuilderLite)]
+#[derive(Default, Clone, Copy, procmacros::BuilderLite)]
 pub struct WatchdogConfig {
     #[cfg(not(any(esp32, esp32s2)))]
     /// Enable the super watchdog timer, which has a trigger time of slightly
     /// less than one second.
-    pub swd: bool,
+    swd: bool,
     /// Configures the reset watchdog timer.
-    pub rwdt: WatchdogStatus,
+    rwdt: WatchdogStatus,
     /// Configures the `timg0` watchdog timer.
-    pub timg0: WatchdogStatus,
-    #[cfg(timg1)]
+    #[cfg(timergroup_timg0)]
+    timg0: WatchdogStatus,
+    #[cfg(timergroup_timg1)]
     /// Configures the `timg1` watchdog timer.
     ///
     /// By default, the bootloader does not enable this watchdog timer.
-    pub timg1: WatchdogStatus,
+    timg1: WatchdogStatus,
 }

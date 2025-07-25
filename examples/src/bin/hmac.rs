@@ -7,8 +7,8 @@
 //!
 //! ## ⚠️ Before writing ⚠️
 //! - From the factory, the eFuse keyblocks are programmed to be 32-byte 0x00.
-//! - This example is programmed to use this value so you can skip this step if
-//!   you don't want to burn an eFuse key.
+//! - This example is programmed to use this value so you can skip this step if you don't want to
+//!   burn an eFuse key.
 //! - If you skip the skip burning a custom key, you still need to [burn the
 //!   purpose](#burn-key-purpose).
 //! - [Read more about eFuses](https://docs.espressif.com/projects/esptool/en/latest/esp32c3/espefuse/index.html)
@@ -36,8 +36,7 @@
 //! ```
 //!
 //! You can then write your key using the following command
-//! - `BLOCK_KEY0` The keyblock to program the key to. By default this example
-//!   uses key0.
+//! - `BLOCK_KEY0` The keyblock to program the key to. By default this example uses key0.
 //! - `HMAC_UP` The purpose for the key. Use HMAC_UP for upstream.
 //! - `--no-read-protect` Allow to read the key from software, after writing it.
 //! ```sh
@@ -69,13 +68,15 @@ use hmac::{Hmac as HmacSw, Mac};
 use nb::block;
 use sha2::Sha256;
 
+esp_bootloader_esp_idf::esp_app_desc!();
+
 type HmacSha256 = HmacSw<Sha256>;
 
 #[main]
 fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
 
-    let mut rng = Rng::new(peripherals.RNG);
+    let rng = Rng::new();
 
     // Set sw key
     let key = [0_u8; 32].as_ref();
@@ -94,23 +95,29 @@ fn main() -> ! {
         let mut remaining = nsrc;
         hw_hmac.init();
         block!(hw_hmac.configure(HmacPurpose::ToUser, KeyId::Key0)).expect("Key purpose mismatch");
-        let pre_hw_hmac = esp_hal::time::now();
+        let pre_hw_hmac = esp_hal::time::Instant::now();
         while remaining.len() > 0 {
             remaining = block!(hw_hmac.update(remaining)).unwrap();
         }
         block!(hw_hmac.finalize(output.as_mut_slice())).unwrap();
-        let post_hw_hmac = esp_hal::time::now();
-        let hw_time = post_hw_hmac - pre_hw_hmac;
+        let hw_time = pre_hw_hmac.elapsed();
+
         let mut sw_hmac = HmacSha256::new_from_slice(key).expect("HMAC can take key of any size");
-        let pre_sw_hash = esp_hal::time::now();
+        let pre_sw_hash = esp_hal::time::Instant::now();
         sw_hmac.update(nsrc);
         let soft_result = sw_hmac.finalize().into_bytes();
-        let post_sw_hash = esp_hal::time::now();
-        let soft_time = post_sw_hash - pre_sw_hash;
+
+        let soft_time = pre_sw_hash.elapsed();
         for (a, b) in output.iter().zip(soft_result) {
             assert_eq!(*a, b);
         }
-        println!("Testing for length: {:>4} | HW: {:>6} cycles, SW: {:>7} cycles (HW HMAC is {:>2}x faster)", i, hw_time, soft_time, soft_time / hw_time);
+        println!(
+            "Testing for length: {:>4} | HW: {:>6} cycles, SW: {:>7} cycles (HW HMAC is {:>2}x faster)",
+            i,
+            hw_time,
+            soft_time,
+            soft_time / hw_time
+        );
     }
     println!("Finished stress tests!");
 

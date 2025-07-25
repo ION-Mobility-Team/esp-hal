@@ -1,3 +1,10 @@
+#![cfg_attr(docsrs, procmacros::doc_replace(
+    "analog_pin" => {
+        cfg(esp32) => "let analog_pin = peripherals.GPIO32;",
+        cfg(any(esp32s2, esp32s3)) => "let analog_pin = peripherals.GPIO3;",
+        cfg(not(any(esp32, esp32s2, esp32s3)))  => "let analog_pin = peripherals.GPIO2;"
+    }
+))]
 //! # Analog to Digital Converter (ADC)
 //!
 //! ## Overview
@@ -21,35 +28,27 @@
 //! ### Read an analog signal from a pin
 //!
 //! ```rust, no_run
-#![doc = crate::before_snippet!()]
+//! # {before_snippet}
 //! # use esp_hal::analog::adc::AdcConfig;
 //! # use esp_hal::peripherals::ADC1;
 //! # use esp_hal::analog::adc::Attenuation;
 //! # use esp_hal::analog::adc::Adc;
 //! # use esp_hal::delay::Delay;
-#![cfg_attr(esp32, doc = "let analog_pin = peripherals.GPIO32;")]
-#![cfg_attr(any(esp32s2, esp32s3), doc = "let analog_pin = peripherals.GPIO3;")]
-#![cfg_attr(
-    not(any(esp32, esp32s2, esp32s3)),
-    doc = "let analog_pin = peripherals.GPIO2;"
-)]
+//! # {analog_pin}
 //! let mut adc1_config = AdcConfig::new();
-//! let mut pin = adc1_config.enable_pin(
-//!     analog_pin,
-//!     Attenuation::_11dB,
-//! );
+//! let mut pin = adc1_config.enable_pin(analog_pin, Attenuation::_11dB);
 //! let mut adc1 = Adc::new(peripherals.ADC1, adc1_config);
 //!
 //! let mut delay = Delay::new();
 //!
 //! loop {
-//!     let pin_value: u16 = nb::block!(adc1.read_oneshot(&mut pin)).unwrap();
+//!     let pin_value: u16 = nb::block!(adc1.read_oneshot(&mut pin))?;
 //!
 //!     delay.delay_millis(1500);
 //! }
 //! # }
 //! ```
-//! 
+//!
 //! ## Implementation State
 //!
 //!  - [ADC calibration is not implemented for all targets].
@@ -57,13 +56,16 @@
 //! [ADC calibration is not implemented for all targets]: https://github.com/esp-rs/esp-hal/issues/326
 use core::marker::PhantomData;
 
-pub use self::implementation::*;
 use crate::gpio::AnalogPin;
 
 #[cfg_attr(esp32, path = "esp32.rs")]
 #[cfg_attr(riscv, path = "riscv.rs")]
 #[cfg_attr(any(esp32s2, esp32s3), path = "xtensa.rs")]
+#[cfg(feature = "unstable")]
 mod implementation;
+
+#[cfg(feature = "unstable")]
+pub use self::implementation::*;
 
 /// The attenuation of the ADC pin.
 ///
@@ -102,19 +104,20 @@ pub struct AdcPin<PIN, ADCI, CS = ()> {
     /// The underlying GPIO pin
     pub pin: PIN,
     /// Calibration scheme used for the configured ADC pin
-    #[cfg_attr(esp32, allow(unused))]
     pub cal_scheme: CS,
     _phantom: PhantomData<ADCI>,
 }
 
 /// Configuration for the ADC.
+#[cfg(feature = "unstable")]
 pub struct AdcConfig<ADCI> {
-    #[cfg_attr(not(esp32), allow(unused))]
+    #[cfg_attr(not(esp32), expect(unused))]
     resolution: Resolution,
     attenuations: [Option<Attenuation>; NUM_ATTENS],
     _phantom: PhantomData<ADCI>,
 }
 
+#[cfg(feature = "unstable")]
 impl<ADCI> AdcConfig<ADCI> {
     /// Create a new configuration struct with its default values
     pub fn new() -> Self {
@@ -140,6 +143,7 @@ impl<ADCI> AdcConfig<ADCI> {
     /// Enable the specified pin with the given attenuation and calibration
     /// scheme
     #[cfg(not(esp32))]
+    #[cfg(feature = "unstable")]
     pub fn enable_pin_with_cal<PIN, CS>(
         &mut self,
         pin: PIN,
@@ -162,6 +166,7 @@ impl<ADCI> AdcConfig<ADCI> {
     }
 }
 
+#[cfg(feature = "unstable")]
 impl<ADCI> Default for AdcConfig<ADCI> {
     fn default() -> Self {
         Self {
@@ -174,6 +179,7 @@ impl<ADCI> Default for AdcConfig<ADCI> {
 
 #[cfg(not(esp32))]
 #[doc(hidden)]
+#[cfg(feature = "unstable")]
 pub trait CalibrationAccess: RegisterAccess {
     const ADC_CAL_CNT_MAX: u16;
     const ADC_CAL_CHANNEL: u16;
@@ -218,7 +224,7 @@ impl<ADCI> AdcCalScheme<ADCI> for () {
 }
 
 /// A helper trait to get access to ADC calibration efuses.
-#[cfg(not(any(esp32, esp32s2, esp32h2)))]
+#[cfg(not(any(esp32, esp32s2)))]
 trait AdcCalEfuse {
     /// Get ADC calibration init code
     ///
@@ -238,10 +244,10 @@ trait AdcCalEfuse {
 
 macro_rules! impl_adc_interface {
     ($adc:ident [
-        $( (GpioPin<$pin:literal>, $channel:expr) ,)+
+        $( ($pin:ident<'_>, $channel:expr) ,)+
     ]) => {
         $(
-            impl $crate::analog::adc::AdcChannel for crate::gpio::GpioPin<$pin> {
+            impl $crate::analog::adc::AdcChannel for $crate::peripherals::$pin<'_> {
                 const CHANNEL: u8 = $channel;
             }
         )+

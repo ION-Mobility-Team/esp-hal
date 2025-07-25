@@ -17,19 +17,20 @@ use core::cell::RefCell;
 use critical_section::Mutex;
 use esp_backtrace as _;
 use esp_hal::{
+    Blocking,
     delay::Delay,
-    gpio::GpioPin,
     handler,
-    interrupt::InterruptConfigurable,
     main,
+    peripherals::GPIO4,
     ram,
     rtc_cntl::Rtc,
     touch::{Continuous, Touch, TouchConfig, TouchPad},
-    Blocking,
 };
 use esp_println::println;
 
-static TOUCH1: Mutex<RefCell<Option<TouchPad<GpioPin<4>, Continuous, Blocking>>>> =
+esp_bootloader_esp_idf::esp_app_desc!();
+
+static TOUCH1: Mutex<RefCell<Option<TouchPad<GPIO4<'static>, Continuous, Blocking>>>> =
     Mutex::new(RefCell::new(None));
 
 #[handler]
@@ -41,7 +42,8 @@ fn interrupt_handler() {
         if touch1.is_interrupt_set() {
             println!("touch 1 pin interrupt");
             touch1.clear_interrupt();
-            // We disable the interrupt until the next loop iteration to avoid massive retriggering.
+            // We disable the interrupt until the next loop iteration to avoid massive
+            // retriggering.
             touch1.disable_interrupt();
         }
     });

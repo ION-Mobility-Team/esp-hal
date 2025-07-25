@@ -11,16 +11,14 @@ pub mod lcd;
 use core::marker::PhantomData;
 
 use crate::{
-    asynch::AtomicWaker,
-    handler,
-    interrupt::{InterruptConfigurable, InterruptHandler},
-    lcd_cam::{cam::Cam, lcd::Lcd},
-    peripheral::Peripheral,
-    peripherals::{Interrupt, LCD_CAM},
-    system::GenericPeripheralGuard,
     Async,
     Blocking,
-    Cpu,
+    asynch::AtomicWaker,
+    handler,
+    interrupt::InterruptHandler,
+    lcd_cam::{cam::Cam, lcd::Lcd},
+    peripherals::{Interrupt, LCD_CAM},
+    system::{Cpu, GenericPeripheralGuard},
 };
 
 /// Represents a combined LCD and Camera interface.
@@ -33,9 +31,7 @@ pub struct LcdCam<'d, Dm: crate::DriverMode> {
 
 impl<'d> LcdCam<'d, Blocking> {
     /// Creates a new `LcdCam` instance.
-    pub fn new(lcd_cam: impl Peripheral<P = LCD_CAM> + 'd) -> Self {
-        crate::into_ref!(lcd_cam);
-
+    pub fn new(lcd_cam: LCD_CAM<'d>) -> Self {
         let lcd_guard = GenericPeripheralGuard::new();
         let cam_guard = GenericPeripheralGuard::new();
 
@@ -64,14 +60,14 @@ impl<'d> LcdCam<'d, Blocking> {
             cam: self.cam,
         }
     }
-}
 
-impl crate::private::Sealed for LcdCam<'_, Blocking> {}
-// TODO: This interrupt is shared with the Camera module, we should handle this
-// in a similar way to the gpio::IO
-impl InterruptConfigurable for LcdCam<'_, Blocking> {
-    fn set_interrupt_handler(&mut self, handler: InterruptHandler) {
-        for core in crate::Cpu::other() {
+    /// Registers an interrupt handler for the LCD_CAM peripheral.
+    ///
+    /// Note that this will replace any previously registered interrupt
+    /// handlers.
+    #[instability::unstable]
+    pub fn set_interrupt_handler(&mut self, handler: InterruptHandler) {
+        for core in crate::system::Cpu::other() {
             crate::interrupt::disable(core, Interrupt::LCD_CAM);
         }
         unsafe { crate::interrupt::bind_interrupt(Interrupt::LCD_CAM, handler.handler()) };
@@ -79,6 +75,16 @@ impl InterruptConfigurable for LcdCam<'_, Blocking> {
             Interrupt::LCD_CAM,
             handler.priority()
         ));
+    }
+}
+
+impl crate::private::Sealed for LcdCam<'_, Blocking> {}
+// TODO: This interrupt is shared with the Camera module, we should handle this
+// in a similar way to the gpio::IO
+#[instability::unstable]
+impl crate::interrupt::InterruptConfigurable for LcdCam<'_, Blocking> {
+    fn set_interrupt_handler(&mut self, handler: InterruptHandler) {
+        self.set_interrupt_handler(handler);
     }
 }
 
@@ -285,11 +291,7 @@ fn calculate_closest_divider(
 
 // https://en.wikipedia.org/wiki/Euclidean_algorithm
 const fn hcf(a: usize, b: usize) -> usize {
-    if b != 0 {
-        hcf(b, a % b)
-    } else {
-        a
-    }
+    if b != 0 { hcf(b, a % b) } else { a }
 }
 
 struct Fraction {

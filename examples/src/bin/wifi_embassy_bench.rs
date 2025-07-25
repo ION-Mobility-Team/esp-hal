@@ -1,16 +1,19 @@
 //! Run a test of download, upload and download+upload in async fashion.
 //!
-//! A prerequisite to running the benchmark examples is to run the benchmark server on your local machine. Simply run the following commands to do so.
+//! A prerequisite to running the benchmark examples is to run the benchmark
+//! server on your local machine. Simply run the following commands to do so.
 //! ```
 //! cd extras/bench-server
 //! cargo run --release
 //! ```
-//! Ensure you have set the IP of your local machine in the `HOST_IP` env variable. E.g `HOST_IP="192.168.0.24"` and also set SSID and PASSWORD env variable before running this example.
+//! Ensure you have set the IP of your local machine in the `HOST_IP` env
+//! variable. E.g `HOST_IP="192.168.0.24"` and also set SSID and PASSWORD env
+//! variable before running this example.
 //!
-//! Because of the huge task-arena size configured this won't work on ESP32-S2 and ESP32-C2
-//!
+//! Because of the huge task-arena size configured this won't work on ESP32-S2
+//! and ESP32-C2
 
-//% FEATURES: embassy esp-wifi esp-wifi/wifi esp-wifi/utils esp-hal/unstable
+//% FEATURES: embassy esp-wifi esp-wifi/wifi esp-hal/unstable
 //% CHIPS: esp32 esp32s2 esp32s3 esp32c3 esp32c6
 
 #![allow(static_mut_refs)]
@@ -21,25 +24,18 @@ use core::net::Ipv4Addr;
 
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
-use embassy_net::{tcp::TcpSocket, Runner, StackResources};
-use embassy_time::{with_timeout, Duration, Timer};
+use embassy_net::{Runner, StackResources, tcp::TcpSocket};
+use embassy_time::{Duration, Timer, with_timeout};
 use esp_alloc as _;
 use esp_backtrace as _;
 use esp_hal::{clock::CpuClock, rng::Rng, timer::timg::TimerGroup};
 use esp_println::println;
 use esp_wifi::{
-    init,
-    wifi::{
-        ClientConfiguration,
-        Configuration,
-        WifiController,
-        WifiDevice,
-        WifiEvent,
-        WifiStaDevice,
-        WifiState,
-    },
     EspWifiController,
+    wifi::{ClientConfiguration, Configuration, WifiController, WifiDevice, WifiEvent, WifiState},
 };
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 // When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
 macro_rules! mk_static {
@@ -73,39 +69,25 @@ async fn main(spawner: Spawner) -> ! {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
-    static mut HEAP: core::mem::MaybeUninit<[u8; 32 * 1024]> = core::mem::MaybeUninit::uninit();
-
-    #[link_section = ".dram2_uninit"]
-    static mut HEAP2: core::mem::MaybeUninit<[u8; 64 * 1024]> = core::mem::MaybeUninit::uninit();
-
-    unsafe {
-        esp_alloc::HEAP.add_region(esp_alloc::HeapRegion::new(
-            HEAP.as_mut_ptr() as *mut u8,
-            core::mem::size_of_val(&*core::ptr::addr_of!(HEAP)),
-            esp_alloc::MemoryCapability::Internal.into(),
-        ));
-
-        // add some more RAM
-        esp_alloc::HEAP.add_region(esp_alloc::HeapRegion::new(
-            HEAP2.as_mut_ptr() as *mut u8,
-            core::mem::size_of_val(&*core::ptr::addr_of!(HEAP2)),
-            esp_alloc::MemoryCapability::Internal.into(),
-        ));
-    }
+    esp_alloc::heap_allocator!(size: 32 * 1024);
+    // add some more RAM
+    esp_alloc::heap_allocator!(#[unsafe(link_section = ".dram2_uninit")] size: 64 * 1024);
 
     let server_address: Ipv4Addr = HOST_IP.parse().expect("Invalid HOST_IP address");
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    let mut rng = Rng::new(peripherals.RNG);
+    esp_radio_preempt_baremetal::init(timg0.timer0);
 
-    let init = &*mk_static!(
-        EspWifiController<'static>,
-        init(timg0.timer0, rng.clone(), peripherals.RADIO_CLK).unwrap()
-    );
+    let esp_wifi_ctrl = &*mk_static!(EspWifiController<'static>, esp_wifi::init().unwrap());
 
-    let wifi = peripherals.WIFI;
-    let (wifi_interface, controller) =
-        esp_wifi::wifi::new_with_mode(&init, wifi, WifiStaDevice).unwrap();
+    let (mut controller, interfaces) =
+        esp_wifi::wifi::new(esp_wifi_ctrl, peripherals.WIFI).unwrap();
+
+    let wifi_interface = interfaces.sta;
+
+    controller
+        .set_power_saving(esp_wifi::config::PowerSaveMode::None)
+        .unwrap();
 
     cfg_if::cfg_if! {
         if #[cfg(feature = "esp32")] {
@@ -120,6 +102,7 @@ async fn main(spawner: Spawner) -> ! {
 
     let config = embassy_net::Config::dhcpv4(Default::default());
 
+    let rng = Rng::new();
     let seed = (rng.random() as u64) << 32 | rng.random() as u64;
 
     // Init network stack
@@ -179,8 +162,8 @@ async fn connection(mut controller: WifiController<'static>) {
         }
         if !matches!(controller.is_started(), Ok(true)) {
             let client_config = Configuration::Client(ClientConfiguration {
-                ssid: SSID.try_into().unwrap(),
-                password: PASSWORD.try_into().unwrap(),
+                ssid: SSID.into(),
+                password: PASSWORD.into(),
                 ..Default::default()
             });
             controller.set_configuration(&client_config).unwrap();
@@ -201,7 +184,7 @@ async fn connection(mut controller: WifiController<'static>) {
 }
 
 #[embassy_executor::task]
-async fn net_task(mut runner: Runner<'static, WifiDevice<'static, WifiStaDevice>>) {
+async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
     runner.run().await
 }
 

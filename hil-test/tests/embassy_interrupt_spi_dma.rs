@@ -2,44 +2,39 @@
 
 //% CHIPS: esp32 esp32s2 esp32s3 esp32c3 esp32c6 esp32h2
 //% FEATURES: unstable embassy
+//% ENV(single_integrated):   ESP_HAL_EMBASSY_CONFIG_TIMER_QUEUE = single-integrated
+//% ENV(multiple_integrated): ESP_HAL_EMBASSY_CONFIG_TIMER_QUEUE = multiple-integrated
+//% ENV(generic_queue):       ESP_HAL_EMBASSY_CONFIG_TIMER_QUEUE = generic
+//% ENV(generic_queue):       ESP_HAL_EMBASSY_CONFIG_GENERIC_QUEUE_SIZE = 16
 
 #![no_std]
 #![no_main]
 
-use embassy_time::{Duration, Instant, Ticker};
+use embassy_time::{Duration, Instant, Timer};
 use esp_hal::{
+    Blocking,
     dma::{DmaRxBuf, DmaTxBuf},
     dma_buffers,
-    interrupt::{software::SoftwareInterruptControl, Priority},
-    peripheral::Peripheral,
+    interrupt::{Priority, software::SoftwareInterruptControl},
     spi::{
-        master::{Config, Spi},
         Mode,
+        master::{Config, Spi},
     },
-    time::RateExtU32,
+    time::Rate,
     timer::AnyTimer,
-    Blocking,
 };
 use esp_hal_embassy::InterruptExecutor;
-use hil_test as _;
+use hil_test::mk_static;
 use portable_atomic::AtomicBool;
 
-macro_rules! mk_static {
-    ($t:ty,$val:expr) => {{
-        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
-        #[deny(unused_attributes)]
-        let x = STATIC_CELL.uninit().write(($val));
-        x
-    }};
-}
+esp_bootloader_esp_idf::esp_app_desc!();
 
+static STOP_INTERRUPT_TASK: AtomicBool = AtomicBool::new(false);
 static INTERRUPT_TASK_WORKING: AtomicBool = AtomicBool::new(false);
 
 #[cfg(any(esp32, esp32s2, esp32s3))]
 #[embassy_executor::task]
 async fn interrupt_driven_task(spi: esp_hal::spi::master::SpiDma<'static, Blocking>) {
-    let mut ticker = Ticker::every(Duration::from_millis(1));
-
     let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) = dma_buffers!(128);
     let dma_rx_buf = DmaRxBuf::new(rx_descriptors, rx_buffer).unwrap();
     let dma_tx_buf = DmaTxBuf::new(tx_descriptors, tx_buffer).unwrap();
@@ -49,29 +44,37 @@ async fn interrupt_driven_task(spi: esp_hal::spi::master::SpiDma<'static, Blocki
     loop {
         let mut buffer: [u8; 8] = [0; 8];
 
-        INTERRUPT_TASK_WORKING.fetch_not(portable_atomic::Ordering::Release);
+        INTERRUPT_TASK_WORKING.store(true, portable_atomic::Ordering::Relaxed);
         spi.transfer_in_place_async(&mut buffer).await.unwrap();
-        INTERRUPT_TASK_WORKING.fetch_not(portable_atomic::Ordering::Acquire);
+        INTERRUPT_TASK_WORKING.store(false, portable_atomic::Ordering::Relaxed);
 
-        ticker.next().await;
+        if STOP_INTERRUPT_TASK.load(portable_atomic::Ordering::Relaxed) {
+            break;
+        }
+
+        Timer::after(Duration::from_millis(1)).await;
     }
 }
 
 #[cfg(not(any(esp32, esp32s2, esp32s3)))]
 #[embassy_executor::task]
 async fn interrupt_driven_task(i2s_tx: esp_hal::i2s::master::I2s<'static, Blocking>) {
-    let mut ticker = Ticker::every(Duration::from_millis(1));
+    let (_, _, _, tx_descriptors) = dma_buffers!(128);
 
-    let mut i2s_tx = i2s_tx.into_async().i2s_tx.build();
+    let mut i2s_tx = i2s_tx.into_async().i2s_tx.build(tx_descriptors);
 
     loop {
         let mut buffer: [u8; 8] = [0; 8];
 
-        INTERRUPT_TASK_WORKING.fetch_not(portable_atomic::Ordering::Release);
+        INTERRUPT_TASK_WORKING.store(true, portable_atomic::Ordering::Relaxed);
         i2s_tx.write_dma_async(&mut buffer).await.unwrap();
-        INTERRUPT_TASK_WORKING.fetch_not(portable_atomic::Ordering::Acquire);
+        INTERRUPT_TASK_WORKING.store(false, portable_atomic::Ordering::Relaxed);
 
-        ticker.next().await;
+        if STOP_INTERRUPT_TASK.load(portable_atomic::Ordering::Relaxed) {
+            break;
+        }
+
+        Timer::after(Duration::from_millis(1)).await;
     }
 }
 
@@ -121,7 +124,7 @@ mod test {
         let mut spi = Spi::new(
             peripherals.SPI2,
             Config::default()
-                .with_frequency(10000.kHz())
+                .with_frequency(Rate::from_khz(10000))
                 .with_mode(Mode::_0),
         )
         .unwrap()
@@ -135,26 +138,20 @@ mod test {
         let other_peripheral = Spi::new(
             peripherals.SPI3,
             Config::default()
-                .with_frequency(10000.kHz())
+                .with_frequency(Rate::from_khz(10000))
                 .with_mode(Mode::_0),
         )
         .unwrap()
         .with_dma(dma_channel2);
 
         #[cfg(not(any(esp32, esp32s2, esp32s3)))]
-        let other_peripheral = {
-            let (_, rx_descriptors, _, tx_descriptors) = dma_buffers!(128);
-
-            esp_hal::i2s::master::I2s::new(
-                peripherals.I2S0,
-                esp_hal::i2s::master::Standard::Philips,
-                esp_hal::i2s::master::DataFormat::Data8Channel8,
-                8u32.kHz(),
-                dma_channel2,
-                rx_descriptors,
-                tx_descriptors,
-            )
-        };
+        let other_peripheral = esp_hal::i2s::master::I2s::new(
+            peripherals.I2S0,
+            esp_hal::i2s::master::Standard::Philips,
+            esp_hal::i2s::master::DataFormat::Data8Channel8,
+            Rate::from_khz(8),
+            dma_channel2,
+        );
 
         let sw_ints = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
 
@@ -181,13 +178,15 @@ mod test {
             assert!(dst_buffer.iter().all(|&v| v == i));
 
             if start.elapsed() > Duration::from_secs(1) {
-                // make sure the other peripheral didn't get stuck
-                while INTERRUPT_TASK_WORKING.load(portable_atomic::Ordering::Acquire) {}
                 break;
             }
 
             i = i.wrapping_add(1);
         }
+
+        // make sure the other peripheral didn't get stuck
+        STOP_INTERRUPT_TASK.store(true, portable_atomic::Ordering::Relaxed);
+        while INTERRUPT_TASK_WORKING.load(portable_atomic::Ordering::Relaxed) {}
     }
 
     // Reproducer of https://github.com/esp-rs/esp-hal/issues/2369
@@ -200,9 +199,9 @@ mod test {
 
         cfg_if::cfg_if! {
             if #[cfg(pdma)] {
-                use esp_hal::dma::Spi2DmaChannel as DmaChannel;
+                type DmaChannel<'a> = esp_hal::peripherals::DMA_SPI2<'a>;
             } else {
-                type DmaChannel = esp_hal::dma::DmaChannel0;
+                type DmaChannel<'a> = esp_hal::peripherals::DMA_CH0<'a>;
             }
         }
 
@@ -210,8 +209,8 @@ mod test {
         static LOOP_COUNT: AtomicU32 = AtomicU32::new(0);
 
         pub struct SpiPeripherals {
-            pub spi: SPI2,
-            pub dma_channel: DmaChannel,
+            pub spi: SPI2<'static>,
+            pub dma_channel: DmaChannel<'static>,
         }
 
         #[embassy_executor::task]
@@ -223,7 +222,7 @@ mod test {
             let mut spi = Spi::new(
                 peripherals.spi,
                 Config::default()
-                    .with_frequency(100.kHz())
+                    .with_frequency(Rate::from_khz(100))
                     .with_mode(Mode::_0),
             )
             .unwrap()
@@ -297,7 +296,7 @@ mod test {
             }
         };
 
-        use esp_hal::cpu_control::{CpuControl, Stack};
+        use esp_hal::system::{CpuControl, Stack};
         const DISPLAY_STACK_SIZE: usize = 8192;
         let app_core_stack = mk_static!(Stack<DISPLAY_STACK_SIZE>, Stack::new());
         let cpu_control = CpuControl::new(peripherals.CPU_CTRL);
@@ -316,5 +315,9 @@ mod test {
             assert_ne!(next, last, "stuck");
             last = next;
         }
+
+        // make sure the other peripheral didn't get stuck
+        STOP_INTERRUPT_TASK.store(true, portable_atomic::Ordering::Relaxed);
+        while INTERRUPT_TASK_WORKING.load(portable_atomic::Ordering::Relaxed) {}
     }
 }

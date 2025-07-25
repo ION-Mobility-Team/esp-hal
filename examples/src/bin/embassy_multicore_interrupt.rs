@@ -18,16 +18,17 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal}
 use embassy_time::{Duration, Ticker};
 use esp_backtrace as _;
 use esp_hal::{
-    cpu_control::{CpuControl, Stack},
     gpio::{Level, Output, OutputConfig},
-    interrupt::{software::SoftwareInterruptControl, Priority},
+    interrupt::{Priority, software::SoftwareInterruptControl},
     main,
-    timer::{timg::TimerGroup, AnyTimer},
-    Cpu,
+    system::{Cpu, CpuControl, Stack},
+    timer::{AnyTimer, timg::TimerGroup},
 };
 use esp_hal_embassy::InterruptExecutor;
 use esp_println::println;
 use static_cell::StaticCell;
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 static mut APP_CORE_STACK: Stack<8192> = Stack::new();
 
@@ -85,8 +86,7 @@ fn main() -> ! {
     static LED_CTRL: StaticCell<Signal<CriticalSectionRawMutex, bool>> = StaticCell::new();
     let led_ctrl_signal = &*LED_CTRL.init(Signal::new());
 
-    let config = OutputConfig::default().with_level(Level::Low);
-    let led = Output::new(peripherals.GPIO0, config).unwrap();
+    let led = Output::new(peripherals.GPIO0, Level::Low, OutputConfig::default());
 
     static EXECUTOR_CORE_1: StaticCell<InterruptExecutor<1>> = StaticCell::new();
     let executor_core1 = InterruptExecutor::new(sw_ints.software_interrupt1);

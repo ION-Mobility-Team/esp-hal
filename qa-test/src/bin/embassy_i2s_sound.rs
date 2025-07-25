@@ -35,10 +35,12 @@ use esp_backtrace as _;
 use esp_hal::{
     dma_buffers,
     i2s::master::{DataFormat, I2s, Standard},
-    time::RateExtU32,
+    time::Rate,
     timer::timg::TimerGroup,
 };
 use esp_println::println;
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 const SINE: [i16; 64] = [
     0, 3211, 6392, 9511, 12539, 15446, 18204, 20787, 23169, 25329, 27244, 28897, 30272, 31356,
@@ -64,16 +66,14 @@ async fn main(_spawner: Spawner) {
         }
     }
 
-    let (_, rx_descriptors, tx_buffer, tx_descriptors) = dma_buffers!(0, 32000);
+    let (_, _, tx_buffer, tx_descriptors) = dma_buffers!(0, 32000);
 
     let i2s = I2s::new(
         peripherals.I2S0,
         Standard::Philips,
         DataFormat::Data16Channel16,
-        44100u32.Hz(),
+        Rate::from_hz(44100),
         dma_channel,
-        rx_descriptors,
-        tx_descriptors,
     )
     .into_async();
 
@@ -82,7 +82,7 @@ async fn main(_spawner: Spawner) {
         .with_bclk(peripherals.GPIO2)
         .with_ws(peripherals.GPIO4)
         .with_dout(peripherals.GPIO5)
-        .build();
+        .build(tx_descriptors);
 
     let data =
         unsafe { core::slice::from_raw_parts(&SINE as *const _ as *const u8, SINE.len() * 2) };

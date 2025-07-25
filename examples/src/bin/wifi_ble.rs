@@ -1,7 +1,8 @@
 //! BLE Example
 //!
 //! - starts Bluetooth advertising
-//! - offers one service with three characteristics (one is read/write, one is write only, one is read/write/notify)
+//! - offers one service with three characteristics (one is read/write, one is write only, one is
+//!   read/write/notify)
 //! - pressing the boot-button on a dev-board will send a notification if it is subscribed
 
 //% FEATURES: esp-wifi esp-wifi/ble esp-hal/unstable
@@ -11,16 +12,16 @@
 #![no_main]
 
 use bleps::{
+    Ble,
+    HciConnector,
     ad_structure::{
-        create_advertising_data,
         AdStructure,
         BR_EDR_NOT_SUPPORTED,
         LE_GENERAL_DISCOVERABLE,
+        create_advertising_data,
     },
     attribute_server::{AttributeServer, NotificationData, WorkResult},
     gatt,
-    Ble,
-    HciConnector,
 };
 use esp_alloc as _;
 use esp_backtrace as _;
@@ -28,12 +29,13 @@ use esp_hal::{
     clock::CpuClock,
     gpio::{Input, InputConfig, Pull},
     main,
-    rng::Rng,
     time,
     timer::timg::TimerGroup,
 };
 use esp_println::println;
-use esp_wifi::{ble::controller::BleConnector, init};
+use esp_wifi::ble::controller::BleConnector;
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 #[main]
 fn main() -> ! {
@@ -41,23 +43,19 @@ fn main() -> ! {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
-    esp_alloc::heap_allocator!(72 * 1024);
+    esp_alloc::heap_allocator!(size: 72 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
+    esp_radio_preempt_baremetal::init(timg0.timer0);
 
-    let init = init(
-        timg0.timer0,
-        Rng::new(peripherals.RNG),
-        peripherals.RADIO_CLK,
-    )
-    .unwrap();
+    let esp_wifi_ctrl = esp_wifi::init().unwrap();
 
     let config = InputConfig::default().with_pull(Pull::Down);
     cfg_if::cfg_if! {
         if #[cfg(any(feature = "esp32", feature = "esp32s2", feature = "esp32s3"))] {
-            let button = Input::new(peripherals.GPIO0, config).unwrap();
+            let button = Input::new(peripherals.GPIO0, config);
         } else {
-            let button = Input::new(peripherals.GPIO9, config).unwrap();
+            let button = Input::new(peripherals.GPIO9, config);
         }
     }
 
@@ -65,9 +63,9 @@ fn main() -> ! {
 
     let mut bluetooth = peripherals.BT;
 
-    let now = || time::now().duration_since_epoch().to_millis();
+    let now = || time::Instant::now().duration_since_epoch().as_millis();
     loop {
-        let connector = BleConnector::new(&init, &mut bluetooth);
+        let connector = BleConnector::new(&esp_wifi_ctrl, bluetooth.reborrow());
         let hci = HciConnector::new(connector, now);
         let mut ble = Ble::new(&hci);
 

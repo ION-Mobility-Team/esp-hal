@@ -60,7 +60,7 @@ impl TimerQueue {
     fn find(&mut self, ets_timer: *mut ets_timer) -> Option<&mut Box<Timer>> {
         let mut current = self.head.as_mut();
         while let Some(timer) = current {
-            if timer.ets_timer == ets_timer {
+            if core::ptr::eq(timer.ets_timer, ets_timer) {
                 return Some(timer);
             }
             current = timer.next.as_mut();
@@ -76,7 +76,7 @@ impl TimerQueue {
         let mut current = self.head.as_mut();
         while let Some(timer) = current {
             if timer.active
-                && crate::timer::time_diff(timer.started, current_timestamp) >= timer.timeout
+                && crate::time::time_diff(timer.started, current_timestamp) >= timer.timeout
             {
                 return Some(timer);
             }
@@ -87,11 +87,11 @@ impl TimerQueue {
     }
 
     fn remove(&mut self, ets_timer: *mut ets_timer) {
-        if let Some(head) = self.head.as_mut() {
-            if head.ets_timer == ets_timer {
-                self.head = head.next.take();
-                return;
-            }
+        if let Some(head) = self.head.as_mut()
+            && core::ptr::eq(head.ets_timer, ets_timer)
+        {
+            self.head = head.next.take();
+            return;
         }
 
         let timer = self.find(ets_timer);
@@ -102,7 +102,7 @@ impl TimerQueue {
             let before = {
                 let mut found = None;
                 while let Some(before) = current {
-                    if before.next.as_mut().unwrap().ets_timer == ets_timer {
+                    if core::ptr::eq(before.next.as_mut().unwrap().ets_timer, ets_timer) {
                         found = Some(before);
                         break;
                     }
@@ -149,15 +149,12 @@ pub(crate) fn compat_timer_arm(ets_timer: *mut ets_timer, tmout: u32, repeat: bo
 }
 
 pub(crate) fn compat_timer_arm_us(ets_timer: *mut ets_timer, us: u32, repeat: bool) {
-    let systick = crate::timer::systimer_count();
-    let ticks = crate::timer::micros_to_ticks(us as u64);
+    let systick = crate::time::systimer_count();
+    let ticks = crate::time::micros_to_ticks(us as u64);
 
     trace!(
         "timer_arm_us {:x} current: {} ticks: {} repeat: {}",
-        ets_timer as usize,
-        systick,
-        ticks,
-        repeat
+        ets_timer as usize, systick, ticks, repeat
     );
 
     TIMERS.with(|timers| {
@@ -210,9 +207,7 @@ pub(crate) fn compat_timer_setfn(
 ) {
     trace!(
         "timer_setfn {:x} {:?} {:?}",
-        ets_timer as usize,
-        pfunction,
-        parg
+        ets_timer as usize, pfunction, parg
     );
     let set = TIMERS.with(|timers| unsafe {
         if let Some(timer) = timers.find(ets_timer) {

@@ -1,11 +1,14 @@
 //! Embassy BLE Example
 //!
 //! - starts Bluetooth advertising
-//! - offers one service with three characteristics (one is read/write, one is write only, one is read/write/notify)
+//! - offers one service with three characteristics (one is read/write, one is write only, one is
+//!   read/write/notify)
 //! - pressing the boot-button on a dev-board will send a notification if it is subscribed
 
 //% FEATURES: embassy esp-wifi esp-wifi/ble esp-hal/unstable
 //% CHIPS: esp32 esp32s3 esp32c2 esp32c3 esp32c6 esp32h2
+
+// Embassy offers another compatible BLE crate [trouble](https://github.com/embassy-rs/trouble/tree/main/examples/esp32) with esp32 examples.
 
 #![no_std]
 #![no_main]
@@ -14,10 +17,10 @@ use core::cell::RefCell;
 
 use bleps::{
     ad_structure::{
-        create_advertising_data,
         AdStructure,
         BR_EDR_NOT_SUPPORTED,
         LE_GENERAL_DISCOVERABLE,
+        create_advertising_data,
     },
     async_attribute_server::AttributeServer,
     asynch::Ble,
@@ -30,12 +33,13 @@ use esp_backtrace as _;
 use esp_hal::{
     clock::CpuClock,
     gpio::{Input, InputConfig, Pull},
-    rng::Rng,
     time,
     timer::timg::TimerGroup,
 };
 use esp_println::println;
-use esp_wifi::{ble::controller::BleConnector, init, EspWifiController};
+use esp_wifi::{EspWifiController, ble::controller::BleConnector};
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 // When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
 macro_rules! mk_static {
@@ -53,26 +57,19 @@ async fn main(_spawner: Spawner) -> ! {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
-    esp_alloc::heap_allocator!(72 * 1024);
+    esp_alloc::heap_allocator!(size: 72 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
+    esp_radio_preempt_baremetal::init(timg0.timer0);
 
-    let init = &*mk_static!(
-        EspWifiController<'static>,
-        init(
-            timg0.timer0,
-            Rng::new(peripherals.RNG),
-            peripherals.RADIO_CLK,
-        )
-        .unwrap()
-    );
+    let esp_wifi_ctrl = &*mk_static!(EspWifiController<'static>, esp_wifi::init().unwrap());
 
     let config = InputConfig::default().with_pull(Pull::Down);
     cfg_if::cfg_if! {
         if #[cfg(any(feature = "esp32", feature = "esp32s2", feature = "esp32s3"))] {
-            let button = Input::new(peripherals.GPIO0, config).unwrap();
+            let button = Input::new(peripherals.GPIO0, config);
         } else {
-            let button = Input::new(peripherals.GPIO9, config).unwrap();
+            let button = Input::new(peripherals.GPIO9, config);
         }
     }
 
@@ -89,9 +86,9 @@ async fn main(_spawner: Spawner) -> ! {
 
     let mut bluetooth = peripherals.BT;
 
-    let connector = BleConnector::new(&init, &mut bluetooth);
+    let connector = BleConnector::new(esp_wifi_ctrl, bluetooth.reborrow());
 
-    let now = || time::now().duration_since_epoch().to_millis();
+    let now = || time::Instant::now().duration_since_epoch().as_millis();
     let mut ble = Ble::new(connector, now);
     println!("Connector created");
 

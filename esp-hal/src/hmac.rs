@@ -9,11 +9,9 @@
 //! Main features:
 //!
 //! - Standard HMAC-SHA-256 algorithm.
-//! - Hash result only accessible by configurable hardware peripheral (in
-//!   downstream mode).
+//! - Hash result only accessible by configurable hardware peripheral (in downstream mode).
 //! - Compatible to challenge-response authentication algorithm.
-//! - Generates required keys for the Digital Signature (DS) peripheral (in
-//!   downstream mode).
+//! - Generates required keys for the Digital Signature (DS) peripheral (in downstream mode).
 //! - Re-enables soft-disabled JTAG (in downstream mode).
 //!
 //! ## Configuration
@@ -38,7 +36,6 @@ use core::convert::Infallible;
 
 use crate::{
     pac,
-    peripheral::{Peripheral, PeripheralRef},
     peripherals::HMAC,
     reg_access::{AlignmentHelper, SocDependentEndianess},
     system::{GenericPeripheralGuard, Peripheral as PeripheralEnable},
@@ -48,7 +45,7 @@ use crate::{
 /// It allows users to compute HMACs for cryptographic purposes, ensuring data
 /// integrity and authenticity.
 pub struct Hmac<'d> {
-    hmac: PeripheralRef<'d, HMAC>,
+    hmac: HMAC<'d>,
     alignment_helper: AlignmentHelper<SocDependentEndianess>,
     byte_written: usize,
     next_command: NextCommand,
@@ -107,9 +104,7 @@ enum NextCommand {
 
 impl<'d> Hmac<'d> {
     /// Creates a new instance of the HMAC peripheral.
-    pub fn new(hmac: impl Peripheral<P = HMAC> + 'd) -> Self {
-        crate::into_ref!(hmac);
-
+    pub fn new(hmac: HMAC<'d>) -> Self {
         let guard = GenericPeripheralGuard::new();
 
         Self {
@@ -184,7 +179,7 @@ impl<'d> Hmac<'d> {
         nb::block!(self.write_data(&[0x80])).unwrap();
         nb::block!(self.flush_data()).unwrap();
         self.next_command();
-        debug_assert!(self.byte_written % 4 == 0);
+        debug_assert!(self.byte_written.is_multiple_of(4));
 
         self.padding(msg_len);
 
@@ -281,7 +276,7 @@ impl<'d> Hmac<'d> {
         );
 
         self.byte_written = self.byte_written.wrapping_add(flushed);
-        if flushed > 0 && self.byte_written % 64 == 0 {
+        if flushed > 0 && self.byte_written.is_multiple_of(64) {
             self.regs()
                 .set_message_one()
                 .write(|w| w.set_text_one().set_bit());
@@ -298,7 +293,7 @@ impl<'d> Hmac<'d> {
         // The padding will be spanned over 2 blocks
         if mod_cursor > 56 {
             let pad_len = 64 - mod_cursor;
-            self.alignment_helper.volatile_write_bytes(
+            self.alignment_helper.volatile_write(
                 #[cfg(esp32s2)]
                 self.regs().wr_message_(0).as_ptr(),
                 #[cfg(not(esp32s2))]
@@ -311,7 +306,7 @@ impl<'d> Hmac<'d> {
                 .set_message_one()
                 .write(|w| w.set_text_one().set_bit());
             self.byte_written = self.byte_written.wrapping_add(pad_len);
-            debug_assert!(self.byte_written % 64 == 0);
+            debug_assert!(self.byte_written.is_multiple_of(64));
             while self.is_busy() {}
             self.next_command = NextCommand::MessagePad;
             self.next_command();
@@ -320,7 +315,7 @@ impl<'d> Hmac<'d> {
         let mod_cursor = self.byte_written % 64;
         let pad_len = 64 - mod_cursor - core::mem::size_of::<u64>();
 
-        self.alignment_helper.volatile_write_bytes(
+        self.alignment_helper.volatile_write(
             #[cfg(esp32s2)]
             self.regs().wr_message_(0).as_ptr(),
             #[cfg(not(esp32s2))]

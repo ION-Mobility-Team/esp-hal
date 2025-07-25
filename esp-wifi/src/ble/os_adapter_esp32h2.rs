@@ -1,9 +1,9 @@
 use crate::{
     binary::include::esp_bt_controller_config_t,
     hal::{
+        clock::ModemClockController,
         interrupt,
-        peripherals::Interrupt,
-        system::{RadioClockController, RadioPeripherals},
+        peripherals::{BT, Interrupt},
     },
 };
 
@@ -17,6 +17,8 @@ pub(crate) static mut ISR_INTERRUPT_3: (
     *mut crate::binary::c_types::c_void,
 ) = (core::ptr::null_mut(), core::ptr::null_mut());
 
+// keep them aligned with BT_CONTROLLER_INIT_CONFIG_DEFAULT in ESP-IDF
+// ideally _some_ of these values should be configurable
 pub(crate) static BLE_CONFIG: esp_bt_controller_config_t = esp_bt_controller_config_t {
     config_version: 0x20240422,
     ble_ll_resolv_list_size: 4,
@@ -69,10 +71,10 @@ pub(crate) static BLE_CONFIG: esp_bt_controller_config_t = esp_bt_controller_con
 };
 
 pub(crate) fn bt_periph_module_enable() {
-    // stealing RADIO_CLK is safe since it is passed (as mutable reference or by
-    // value) into `init`
-    let mut radio_clocks = unsafe { esp_hal::peripherals::RADIO_CLK::steal() };
-    radio_clocks.enable(RadioPeripherals::Bt);
+    // stealing BT is safe, since it is passed into the initialization function of the BLE
+    // controller.
+    let mut bt = unsafe { BT::steal() };
+    bt.enable_modem_clock(true);
 }
 
 pub(crate) fn disable_sleep_mode() {
@@ -88,51 +90,49 @@ pub(super) unsafe extern "C" fn esp_intr_alloc(
 ) -> i32 {
     trace!(
         "esp_intr_alloc {} {} {:?} {:?} {:?}",
-        source,
-        flags,
-        handler,
-        arg,
-        ret_handle
+        source, flags, handler, arg, ret_handle
     );
 
-    match source {
-        3 => {
-            ISR_INTERRUPT_3 = (handler, arg);
-            unwrap!(interrupt::enable(
-                Interrupt::LP_BLE_TIMER,
-                interrupt::Priority::Priority1
-            ));
+    unsafe {
+        match source {
+            3 => {
+                ISR_INTERRUPT_3 = (handler, arg);
+                unwrap!(interrupt::enable(
+                    Interrupt::LP_BLE_TIMER,
+                    interrupt::Priority::Priority1
+                ));
+            }
+            15 => {
+                ISR_INTERRUPT_15 = (handler, arg);
+                unwrap!(interrupt::enable(
+                    Interrupt::BT_MAC,
+                    interrupt::Priority::Priority1
+                ));
+            }
+            _ => panic!("Unexpected interrupt source {}", source),
         }
-        15 => {
-            ISR_INTERRUPT_15 = (handler, arg);
-            unwrap!(interrupt::enable(
-                Interrupt::BT_MAC,
-                interrupt::Priority::Priority1
-            ));
-        }
-        _ => panic!("Unexpected interrupt source {}", source),
     }
 
     0
 }
 
 pub(super) fn ble_rtc_clk_init() {
-    // stealing RADIO_CLK is safe since it is passed (as reference or by value) into
-    // `init`
-    let mut radio_clocks = unsafe { esp_hal::peripherals::RADIO_CLK::steal() };
-    radio_clocks.ble_rtc_clk_init();
+    // stealing BT is safe, since it is passed into the initialization function of the BLE
+    // controller.
+    let mut bt = unsafe { BT::steal() };
+    bt.ble_rtc_clk_init();
 }
 
 pub(super) unsafe extern "C" fn esp_reset_rpa_moudle() {
     trace!("esp_reset_rpa_moudle");
-    // stealing RADIO_CLK is safe since it is passed (as mutable reference or by
-    // value) into `init`
-    let mut radio_clocks = unsafe { esp_hal::peripherals::RADIO_CLK::steal() };
-    radio_clocks.reset_rpa();
+    // stealing BT is safe, since it is passed into the initialization function of the BLE
+    // controller.
+    let mut bt = unsafe { BT::steal() };
+    bt.reset_rpa();
 }
 
 #[allow(improper_ctypes_definitions)]
-#[no_mangle]
+#[unsafe(no_mangle)]
 unsafe extern "C" fn jrand48(
     _xsubi: [crate::binary::c_types::c_ushort; 3],
 ) -> crate::binary::c_types::c_long {

@@ -1,10 +1,19 @@
-use esp_wifi_sys::include::timeval;
-use hal::ram;
+use esp_wifi_sys::{
+    c_types::c_char,
+    include::{
+        esp_phy_calibration_data_t,
+        esp_phy_calibration_mode_t,
+        get_phy_version_str,
+        register_chipv7_phy,
+        timeval,
+    },
+};
+use portable_atomic::{AtomicU32, Ordering};
 
 use crate::{
     binary::include::{esp_event_base_t, esp_timer_get_time},
     compat::{common::*, timer_compat::*},
-    hal,
+    hal::{self, clock::ModemClockController, ram},
 };
 
 #[cfg_attr(esp32c3, path = "common_adapter_esp32c3.rs")]
@@ -109,12 +118,11 @@ pub unsafe extern "C" fn semphr_give(semphr: *mut crate::binary::c_types::c_void
 /// *************************************************************************
 #[allow(unused)]
 #[ram]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn random() -> crate::binary::c_types::c_ulong {
     trace!("random");
 
-    // stealing RNG is safe since we own it (passed into `init`)
-    let mut rng = esp_hal::rng::Rng::new(unsafe { esp_hal::peripherals::RNG::steal() });
+    let rng = hal::rng::Rng::new();
     rng.random()
 }
 
@@ -135,41 +143,45 @@ pub unsafe extern "C" fn random() -> crate::binary::c_types::c_ulong {
 pub unsafe extern "C" fn read_mac(mac: *mut u8, type_: u32) -> crate::binary::c_types::c_int {
     trace!("read_mac {:?} {}", mac, type_);
 
-    let base_mac = crate::hal::efuse::Efuse::mac_address();
+    let base_mac = hal::efuse::Efuse::mac_address();
 
     for (i, &byte) in base_mac.iter().enumerate() {
-        mac.add(i).write_volatile(byte);
-    }
-
-    // ESP_MAC_WIFI_SOFTAP
-    if type_ == 1 {
-        let tmp = mac.offset(0).read_volatile();
-        for i in 0..64 {
-            mac.offset(0).write_volatile(tmp | 0x02);
-            mac.offset(0)
-                .write_volatile(mac.offset(0).read_volatile() ^ (i << 2));
-
-            if mac.offset(0).read_volatile() != tmp {
-                break;
-            }
+        unsafe {
+            mac.add(i).write_volatile(byte);
         }
     }
 
-    // ESP_MAC_BT
-    if type_ == 2 {
-        let tmp = mac.offset(0).read_volatile();
-        for i in 0..64 {
-            mac.offset(0).write_volatile(tmp | 0x02);
-            mac.offset(0)
-                .write_volatile(mac.offset(0).read_volatile() ^ (i << 2));
+    unsafe {
+        // ESP_MAC_WIFI_SOFTAP
+        if type_ == 1 {
+            let tmp = mac.offset(0).read_volatile();
+            for i in 0..64 {
+                mac.offset(0).write_volatile(tmp | 0x02);
+                mac.offset(0)
+                    .write_volatile(mac.offset(0).read_volatile() ^ (i << 2));
 
-            if mac.offset(0).read_volatile() != tmp {
-                break;
+                if mac.offset(0).read_volatile() != tmp {
+                    break;
+                }
             }
         }
 
-        mac.offset(5)
-            .write_volatile(mac.offset(5).read_volatile() + 1);
+        // ESP_MAC_BT
+        if type_ == 2 {
+            let tmp = mac.offset(0).read_volatile();
+            for i in 0..64 {
+                mac.offset(0).write_volatile(tmp | 0x02);
+                mac.offset(0)
+                    .write_volatile(mac.offset(0).read_volatile() ^ (i << 2));
+
+                if mac.offset(0).read_volatile() != tmp {
+                    break;
+                }
+            }
+
+            mac.offset(5)
+                .write_volatile(mac.offset(5).read_volatile() + 1);
+        }
     }
 
     0
@@ -179,78 +191,64 @@ pub unsafe extern "C" fn read_mac(mac: *mut u8, type_: u32) -> crate::binary::c_
 #[ram]
 pub(crate) unsafe extern "C" fn semphr_take_from_isr(sem: *const (), hptw: *const ()) -> i32 {
     trace!("sem take from isr");
-    (hptw as *mut u32).write_volatile(0);
-    crate::common_adapter::semphr_take(sem as *mut crate::binary::c_types::c_void, 0)
+    unsafe {
+        (hptw as *mut u32).write_volatile(0);
+        crate::common_adapter::semphr_take(sem as *mut crate::binary::c_types::c_void, 0)
+    }
 }
 
 #[allow(unused)]
 #[ram]
 pub(crate) unsafe extern "C" fn semphr_give_from_isr(sem: *const (), hptw: *const ()) -> i32 {
     trace!("sem give from isr");
-    (hptw as *mut u32).write_volatile(0);
-    crate::common_adapter::semphr_give(sem as *mut crate::binary::c_types::c_void)
+    unsafe {
+        (hptw as *mut u32).write_volatile(0);
+        crate::common_adapter::semphr_give(sem as *mut crate::binary::c_types::c_void)
+    }
 }
 
 // other functions
-#[no_mangle]
-pub unsafe extern "C" fn puts(s: *const u8) {
-    let cstr = str_from_c(s);
-    info!("{}", cstr);
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn puts(s: *const c_char) {
+    unsafe {
+        let cstr = str_from_c(s);
+        info!("{}", cstr);
+    }
 }
 
 // #define ESP_EVENT_DEFINE_BASE(id) esp_event_base_t id = #id
-#[no_mangle]
+#[unsafe(no_mangle)]
 static mut WIFI_EVENT: esp_event_base_t = c"WIFI_EVENT".as_ptr();
 
-// stuff needed by wpa-supplicant
-#[no_mangle]
-pub unsafe extern "C" fn __assert_func(
-    file: *const u8,
-    line: u32,
-    func: *const u8,
-    failed_expr: *const u8,
-) {
-    let file = str_from_c(file);
-    let (func_pre, func) = if func.is_null() {
-        ("", "")
-    } else {
-        (", function: ", str_from_c(func))
-    };
-    let expr = str_from_c(failed_expr);
-
-    panic!(
-        "assertion \"{}\" failed: file \"{}\", line {}{}{}",
-        expr, file, line, func_pre, func
-    );
-}
-
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn ets_timer_disarm(timer: *mut crate::binary::c_types::c_void) {
     compat_timer_disarm(timer.cast());
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn ets_timer_done(timer: *mut crate::binary::c_types::c_void) {
     compat_timer_done(timer.cast());
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn ets_timer_setfn(
     ptimer: *mut crate::binary::c_types::c_void,
     pfunction: *mut crate::binary::c_types::c_void,
     parg: *mut crate::binary::c_types::c_void,
 ) {
-    compat_timer_setfn(
-        ptimer.cast(),
-        core::mem::transmute::<
-            *mut crate::binary::c_types::c_void,
-            unsafe extern "C" fn(*mut crate::binary::c_types::c_void),
-        >(pfunction),
-        parg,
-    );
+    unsafe {
+        compat_timer_setfn(
+            ptimer.cast(),
+            core::mem::transmute::<
+                *mut crate::binary::c_types::c_void,
+                unsafe extern "C" fn(*mut crate::binary::c_types::c_void),
+            >(pfunction),
+            parg,
+        );
+    }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn ets_timer_arm(
     timer: *mut crate::binary::c_types::c_void,
     tmout: u32,
@@ -259,7 +257,7 @@ pub unsafe extern "C" fn ets_timer_arm(
     compat_timer_arm(timer.cast(), tmout, repeat);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn ets_timer_arm_us(
     timer: *mut crate::binary::c_types::c_void,
     tmout: u32,
@@ -268,7 +266,7 @@ pub unsafe extern "C" fn ets_timer_arm_us(
     compat_timer_arm_us(timer.cast(), tmout, repeat);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn gettimeofday(tv: *mut timeval, _tz: *mut ()) -> i32 {
     if !tv.is_null() {
         unsafe {
@@ -281,29 +279,93 @@ pub unsafe extern "C" fn gettimeofday(tv: *mut timeval, _tz: *mut ()) -> i32 {
     0
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn esp_fill_random(dst: *mut u8, len: u32) {
     trace!("esp_fill_random");
-    let dst = core::slice::from_raw_parts_mut(dst, len as usize);
+    unsafe {
+        let dst = core::slice::from_raw_parts_mut(dst, len as usize);
 
-    // stealing RNG is safe since we own it (passed into `init`)
-    let mut rng = esp_hal::rng::Rng::new(unsafe { esp_hal::peripherals::RNG::steal() });
-    for chunk in dst.chunks_mut(4) {
-        let bytes = rng.random().to_le_bytes();
-        chunk.copy_from_slice(&bytes[..chunk.len()]);
+        let rng = esp_hal::rng::Rng::new();
+        for chunk in dst.chunks_mut(4) {
+            let bytes = rng.random().to_le_bytes();
+            chunk.copy_from_slice(&bytes[..chunk.len()]);
+        }
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn strrchr(_s: *const (), _c: u32) -> *const u8 {
     todo!("strrchr");
 }
 
-// this will result in a duplicate symbol error once `floor` is available
-// ideally we would use weak linkage but that is not stabilized
-// see https://github.com/esp-rs/esp-wifi/pull/191
-#[cfg(feature = "esp32c6")]
-#[no_mangle]
-pub unsafe extern "C" fn floor(v: f64) -> f64 {
-    libm::floor(v)
+static PHY_CLOCK_ENABLE_REF: AtomicU32 = AtomicU32::new(0);
+
+// We're use either WIFI or BT here, since esp-wifi also supports the ESP32-H2 as the only
+// chip, with BT but without WIFI.
+#[cfg(not(esp32h2))]
+type ModemClockControllerPeripheral = esp_hal::peripherals::WIFI<'static>;
+#[cfg(esp32h2)]
+type ModemClockControllerPeripheral = esp_hal::peripherals::BT<'static>;
+
+pub(crate) unsafe fn phy_enable_clock() {
+    let count = PHY_CLOCK_ENABLE_REF.fetch_add(1, Ordering::Acquire);
+    if count == 0 {
+        // Stealing the peripheral is safe here, as they must have been passed into the relevant
+        // initialization functions for the Wi-Fi or BLE controller, if this code gets executed.
+        let clock_guard = unsafe { ModemClockControllerPeripheral::steal() }.enable_phy_clock();
+        core::mem::forget(clock_guard);
+
+        trace!("phy_enable_clock done!");
+    }
+}
+
+#[allow(unused)]
+pub(crate) unsafe fn phy_disable_clock() {
+    let count = PHY_CLOCK_ENABLE_REF.fetch_sub(1, Ordering::Release);
+    if count == 1 {
+        unsafe { ModemClockControllerPeripheral::steal() }.decrease_phy_clock_ref_count();
+        trace!("phy_disable_clock done!");
+    }
+}
+
+pub(crate) fn phy_calibrate() {
+    let mut cal_data: [u8; core::mem::size_of::<esp_phy_calibration_data_t>()] =
+        [0u8; core::mem::size_of::<esp_phy_calibration_data_t>()];
+
+    let phy_version = unsafe { get_phy_version_str() };
+    trace!("phy_version {}", unsafe { str_from_c(phy_version) });
+
+    let init_data = &phy_init_data::PHY_INIT_DATA_DEFAULT;
+
+    unsafe {
+        chip_specific::bbpll_en_usb();
+
+        cfg_if::cfg_if! {
+            if #[cfg(phy_full_calibration)] {
+                const CALIBRATION_MODE: esp_phy_calibration_mode_t = esp_wifi_sys::include::esp_phy_calibration_mode_t_PHY_RF_CAL_FULL;
+            } else {
+                const CALIBRATION_MODE: esp_phy_calibration_mode_t = esp_wifi_sys::include::esp_phy_calibration_mode_t_PHY_RF_CAL_PARTIAL;
+            }
+        };
+
+        cfg_if::cfg_if! {
+            if #[cfg(phy_skip_calibration_after_deep_sleep)] {
+                let calibration_mode = if crate::hal::system::reset_reason() == Some(crate::hal::rtc_cntl::SocResetReason::CoreDeepSleep) {
+                    esp_wifi_sys::include::esp_phy_calibration_mode_t_PHY_RF_CAL_NONE
+                } else {
+                    CALIBRATION_MODE
+                };
+            } else {
+                let calibration_mode = CALIBRATION_MODE;
+            }
+        };
+
+        debug!("Using calibration mode {}", calibration_mode);
+
+        register_chipv7_phy(
+            init_data,
+            &mut cal_data as *mut _ as *mut crate::binary::include::esp_phy_calibration_data_t,
+            calibration_mode,
+        );
+    }
 }

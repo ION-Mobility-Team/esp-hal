@@ -2,27 +2,30 @@
 
 //% CHIPS: esp32s3
 //% FEATURES: unstable psram
+// The dev kit in the HIL-tester has octal PSRAM.
+//% ENV: ESP_HAL_CONFIG_PSRAM_MODE=octal
 
 #![no_std]
 #![no_main]
 use defmt::error;
 use esp_alloc as _;
 use esp_hal::{
+    Blocking,
     dma::{DmaRxBuf, DmaTxBuf, ExternalBurstConfig},
     dma_buffers,
     dma_descriptors_chunk_size,
     gpio::interconnect::InputSignal,
-    pcnt::{channel::EdgeMode, unit::Unit, Pcnt},
+    pcnt::{Pcnt, channel::EdgeMode, unit::Unit},
     spi::{
-        master::{Address, Command, Config, Spi, SpiDma},
-        DataMode,
         Mode,
+        master::{Address, Command, Config, DataMode, Spi, SpiDma},
     },
-    time::RateExtU32,
-    Blocking,
+    time::Rate,
 };
 use hil_test as _;
 extern crate alloc;
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 macro_rules! dma_alloc_buffer {
     ($size:expr, $align:expr) => {{
@@ -41,7 +44,7 @@ macro_rules! dma_alloc_buffer {
 struct Context {
     spi: SpiDma<'static, Blocking>,
     pcnt_unit: Unit<'static, 0>,
-    pcnt_source: InputSignal,
+    pcnt_source: InputSignal<'static>,
 }
 
 #[cfg(test)]
@@ -63,12 +66,12 @@ mod tests {
 
         let dma_channel = peripherals.DMA_CH0;
 
-        let (mosi_loopback, mosi) = mosi.split();
+        let (mosi_loopback, mosi) = unsafe { mosi.split() };
 
         let spi = Spi::new(
             peripherals.SPI2,
             Config::default()
-                .with_frequency(100.kHz())
+                .with_frequency(Rate::from_khz(100))
                 .with_mode(Mode::_0),
         )
         .unwrap()

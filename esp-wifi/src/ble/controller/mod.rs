@@ -1,14 +1,11 @@
 use embedded_io::{Error, ErrorType, Read, Write};
 
 use super::{read_hci, read_next, send_hci};
-use crate::{
-    hal::peripheral::{Peripheral, PeripheralRef},
-    EspWifiController,
-};
+use crate::EspWifiController;
 
 /// A blocking HCI connector
 pub struct BleConnector<'d> {
-    _device: PeripheralRef<'d, crate::hal::peripherals::BT>,
+    _device: crate::hal::peripherals::BT<'d>,
 }
 
 impl Drop for BleConnector<'_> {
@@ -20,13 +17,11 @@ impl Drop for BleConnector<'_> {
 impl<'d> BleConnector<'d> {
     pub fn new(
         _init: &'d EspWifiController<'d>,
-        device: impl Peripheral<P = crate::hal::peripherals::BT> + 'd,
+        device: crate::hal::peripherals::BT<'d>,
     ) -> BleConnector<'d> {
         crate::ble::ble_init();
 
-        Self {
-            _device: device.into_ref(),
-        }
+        Self { _device: device }
     }
 
     pub fn next(&mut self, buf: &mut [u8]) -> Result<usize, BleConnectorError> {
@@ -50,20 +45,17 @@ impl ErrorType for BleConnector<'_> {
 }
 
 impl Read for BleConnector<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+    fn read(&mut self, mut buf: &mut [u8]) -> Result<usize, Self::Error> {
         let mut total = 0;
-        for b in buf {
-            let mut buffer = [0u8];
-            let len = read_hci(&mut buffer);
-
-            if len == 1 {
-                *b = buffer[0];
-                total += 1;
-            } else {
-                return Ok(total);
+        while !buf.is_empty() {
+            let len = read_hci(buf);
+            if len == 0 {
+                break;
             }
-        }
 
+            buf = &mut buf[len..];
+            total += len;
+        }
         Ok(total)
     }
 }
@@ -87,11 +79,11 @@ pub(crate) mod asynch {
     use core::task::Poll;
 
     use bt_hci::{
-        transport::{Transport, WithIndicator},
         ControllerToHostPacket,
         FromHciBytes,
         HostToControllerPacket,
         WriteHci,
+        transport::{Transport, WithIndicator},
     };
     use esp_hal::asynch::AtomicWaker;
 
@@ -105,24 +97,24 @@ pub(crate) mod asynch {
     }
 
     impl embedded_io_async::Read for BleConnector<'_> {
-        async fn read(&mut self, buf: &mut [u8]) -> Result<usize, BleConnectorError> {
-            if !have_hci_read_data() {
-                HciReadyEventFuture.await;
+        async fn read(&mut self, mut buf: &mut [u8]) -> Result<usize, BleConnectorError> {
+            if buf.is_empty() {
+                return Ok(0);
             }
 
             let mut total = 0;
-            for b in buf {
-                let mut buffer = [0u8];
-                let len = read_hci(&mut buffer);
-
-                if len == 1 {
-                    *b = buffer[0];
-                    total += 1;
-                } else {
-                    return Ok(total);
-                }
+            if !have_hci_read_data() {
+                HciReadyEventFuture.await;
             }
+            while !buf.is_empty() {
+                let len = read_hci(buf);
+                if len == 0 {
+                    break;
+                }
 
+                buf = &mut buf[len..];
+                total += len;
+            }
             Ok(total)
         }
     }
@@ -164,7 +156,7 @@ pub(crate) mod asynch {
             Ok(p) => Ok(Some(p)),
             Err(e) => {
                 if e == bt_hci::FromHciBytesError::InvalidSize {
-                    use bt_hci::{event::EventPacketHeader, PacketKind};
+                    use bt_hci::{PacketKind, event::EventPacketHeader};
 
                     // Some controllers emit a suprious command complete event at startup.
                     let (kind, data) =

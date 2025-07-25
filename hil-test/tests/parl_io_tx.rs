@@ -9,36 +9,40 @@
 #[cfg(esp32c6)]
 use esp_hal::parl_io::{TxPinConfigWithValidPin, TxSixteenBits};
 use esp_hal::{
-    dma::DmaChannel0,
+    dma::DmaTxBuf,
+    dma_tx_buffer,
     gpio::{
-        interconnect::{InputSignal, OutputSignal},
         NoPin,
+        interconnect::{InputSignal, OutputSignal},
     },
     parl_io::{
         BitPackOrder,
         ClkOutPin,
-        ParlIoTxOnly,
+        ParlIo,
         SampleEdge,
+        TxConfig,
         TxEightBits,
         TxPinConfigIncludingValidPin,
     },
     pcnt::{
+        Pcnt,
         channel::{CtrlMode, EdgeMode},
         unit::Unit,
-        Pcnt,
     },
-    peripherals::PARL_IO,
-    time::RateExtU32,
+    peripherals::{DMA_CH0, PARL_IO},
+    time::Rate,
 };
 use hil_test as _;
 
+esp_bootloader_esp_idf::esp_app_desc!();
+
 struct Context {
-    parl_io: PARL_IO,
-    dma_channel: DmaChannel0,
-    clock: OutputSignal,
-    valid: OutputSignal,
-    clock_loopback: InputSignal,
-    valid_loopback: InputSignal,
+    parl_io: PARL_IO<'static>,
+    dma_channel: DMA_CH0<'static>,
+    clock: OutputSignal<'static>,
+    valid: OutputSignal<'static>,
+    clock_loopback: InputSignal<'static>,
+    valid_loopback: InputSignal<'static>,
     pcnt_unit: Unit<'static, 0>,
 }
 
@@ -55,8 +59,8 @@ mod tests {
 
         let (clock, _) = hil_test::common_test_pins!(peripherals);
         let valid = hil_test::unconnected_pin!(peripherals);
-        let (clock_loopback, clock) = clock.split();
-        let (valid_loopback, valid) = valid.split();
+        let (clock_loopback, clock) = unsafe { clock.split() };
+        let (valid_loopback, valid) = unsafe { valid.split() };
         let pcnt = Pcnt::new(peripherals.PCNT);
         let pcnt_unit = pcnt.unit0;
         let dma_channel = peripherals.DMA_CH0;
@@ -78,31 +82,31 @@ mod tests {
     #[test]
     fn test_parl_io_tx_16bit_valid_clock_count(ctx: Context) {
         const BUFFER_SIZE: usize = 64;
-        let tx_buffer = [0u16; BUFFER_SIZE];
-        let (_, tx_descriptors) = esp_hal::dma_descriptors!(0, 2 * BUFFER_SIZE);
+
+        let mut dma_tx_buf: DmaTxBuf = dma_tx_buffer!(2 * BUFFER_SIZE).unwrap();
 
         let pins = TxSixteenBits::new(
             NoPin, NoPin, NoPin, NoPin, NoPin, NoPin, NoPin, NoPin, NoPin, NoPin, NoPin, NoPin,
             NoPin, NoPin, NoPin, ctx.valid,
         );
-        let mut pins = TxPinConfigIncludingValidPin::new(pins);
-        let mut clock_pin = ClkOutPin::new(ctx.clock);
+        let pins = TxPinConfigIncludingValidPin::new(pins);
+        let clock_pin = ClkOutPin::new(ctx.clock);
 
-        let pio =
-            ParlIoTxOnly::new(ctx.parl_io, ctx.dma_channel, tx_descriptors, 10.MHz()).unwrap();
+        let pio = ParlIo::new(ctx.parl_io, ctx.dma_channel).unwrap();
 
         let mut pio = pio
             .tx
             .with_config(
-                &mut pins,
-                &mut clock_pin,
-                0,
-                SampleEdge::Invert,
-                BitPackOrder::Msb,
+                pins,
+                clock_pin,
+                TxConfig::default()
+                    .with_frequency(Rate::from_mhz(10))
+                    .with_sample_edge(SampleEdge::Invert)
+                    .with_bit_order(BitPackOrder::Msb),
             )
             .unwrap(); // TODO: handle error
 
-        // use a PCNT unit to count the negitive clock edges only when valid is high
+        // use a PCNT unit to count the negative clock edges only when valid is high
         let clock_unit = ctx.pcnt_unit;
         clock_unit.channel0.set_edge_signal(ctx.clock_loopback);
         clock_unit.channel0.set_ctrl_signal(ctx.valid_loopback);
@@ -115,8 +119,11 @@ mod tests {
 
         for _ in 0..100 {
             clock_unit.clear();
-            let xfer = pio.write_dma(&tx_buffer).unwrap();
-            xfer.wait().unwrap();
+            let xfer = pio
+                .write(dma_tx_buf.len(), dma_tx_buf)
+                .map_err(|e| e.0)
+                .unwrap();
+            (_, pio, dma_tx_buf) = xfer.wait();
             info!("clock count: {}", clock_unit.value());
             assert_eq!(clock_unit.value(), BUFFER_SIZE as _);
         }
@@ -125,8 +132,7 @@ mod tests {
     #[test]
     fn test_parl_io_tx_8bit_valid_clock_count(ctx: Context) {
         const BUFFER_SIZE: usize = 64;
-        let tx_buffer = [0u8; BUFFER_SIZE];
-        let (_, tx_descriptors) = esp_hal::dma_descriptors!(0, 2 * BUFFER_SIZE);
+        let mut dma_tx_buf: DmaTxBuf = dma_tx_buffer!(BUFFER_SIZE).unwrap();
 
         let pins = TxEightBits::new(
             NoPin,
@@ -143,27 +149,27 @@ mod tests {
         );
 
         #[cfg(esp32h2)]
-        let mut pins = TxPinConfigIncludingValidPin::new(pins);
+        let pins = TxPinConfigIncludingValidPin::new(pins);
         #[cfg(esp32c6)]
-        let mut pins = TxPinConfigWithValidPin::new(pins, ctx.valid);
+        let pins = TxPinConfigWithValidPin::new(pins, ctx.valid);
 
-        let mut clock_pin = ClkOutPin::new(ctx.clock);
+        let clock_pin = ClkOutPin::new(ctx.clock);
 
-        let pio =
-            ParlIoTxOnly::new(ctx.parl_io, ctx.dma_channel, tx_descriptors, 10.MHz()).unwrap();
+        let pio = ParlIo::new(ctx.parl_io, ctx.dma_channel).unwrap();
 
         let mut pio = pio
             .tx
             .with_config(
-                &mut pins,
-                &mut clock_pin,
-                0,
-                SampleEdge::Invert,
-                BitPackOrder::Msb,
+                pins,
+                clock_pin,
+                TxConfig::default()
+                    .with_frequency(Rate::from_mhz(10))
+                    .with_sample_edge(SampleEdge::Invert)
+                    .with_bit_order(BitPackOrder::Msb),
             )
             .unwrap(); // TODO: handle error
 
-        // use a PCNT unit to count the negitive clock edges only when valid is high
+        // use a PCNT unit to count the negative clock edges only when valid is high
         let clock_unit = ctx.pcnt_unit;
         clock_unit.channel0.set_edge_signal(ctx.clock_loopback);
         clock_unit.channel0.set_ctrl_signal(ctx.valid_loopback);
@@ -176,8 +182,11 @@ mod tests {
 
         for _ in 0..100 {
             clock_unit.clear();
-            let xfer = pio.write_dma(&tx_buffer).unwrap();
-            xfer.wait().unwrap();
+            let xfer = pio
+                .write(dma_tx_buf.len(), dma_tx_buf)
+                .map_err(|e| e.0)
+                .unwrap();
+            (_, pio, dma_tx_buf) = xfer.wait();
             info!("clock count: {}", clock_unit.value());
             assert_eq!(clock_unit.value(), BUFFER_SIZE as _);
         }
